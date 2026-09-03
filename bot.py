@@ -47,10 +47,13 @@ DEPTS = {
     "ops":   {"emoji": "⚙️"},
     "fin":   {"emoji": "💶"},
     "stock": {"emoji": "📦"},
+    "menu":  {"emoji": "🍽"},
     "mkt":   {"emoji": "📣"},
     "hr":    {"emoji": "👥"},
     "it":    {"emoji": "🖥"},
 }
+
+FC_LIMIT = 30.0  # порог фуд коста, %
 
 DOCTYPES = {
     "factura":  {"emoji": "🧾"},
@@ -68,6 +71,17 @@ T = {
     "dept_ops":   {"es": "Operaciones",        "ru": "Операционные вопросы", "en": "Operations"},
     "dept_fin":   {"es": "Finanzas y pagos",   "ru": "Финансы и платежи",    "en": "Finance & payments"},
     "dept_stock": {"es": "Almacén e inventario","ru": "Склад и товарный учёт","en": "Stock & inventory"},
+    "dept_menu":  {"es": "Carta y food cost", "ru": "Меню и фуд кост",   "en": "Menu & food cost"},
+
+    "fc_btn":     {"es": "📊 Análisis food cost", "ru": "📊 Анализ фуд коста", "en": "📊 Food cost analysis"},
+    "fc_title":   {"es": "Peores por food cost",  "ru": "Худшие по фуд косту", "en": "Worst by food cost"},
+    "fc_none":    {"es": "Sin datos de coste.",   "ru": "Нет данных по себестоимости.", "en": "No cost data."},
+    "no_card":    {"es": "sin ficha técnica",     "ru": "без техкарты",       "en": "no tech card"},
+    "zero_price": {"es": "precio 0",              "ru": "цена 0",             "en": "zero price"},
+    "price":      {"es": "Precio",                "ru": "Цена",               "en": "Price"},
+    "cost":       {"es": "Coste",                 "ru": "Себестоимость",      "en": "Cost"},
+    "margin":     {"es": "Margen",                "ru": "Наценка",            "en": "Margin"},
+    "dishes":     {"es": "platos",                "ru": "блюд",               "en": "dishes"},
     "dept_mkt":   {"es": "Marketing",          "ru": "Маркетинг",            "en": "Marketing"},
     "dept_hr":    {"es": "RRHH",               "ru": "HR",                   "en": "HR"},
     "dept_it":    {"es": "Soporte IT",         "ru": "IT-суппорт программ",  "en": "IT support"},
@@ -135,6 +149,7 @@ USERS_WS = "Users"
 CONTENT_WS = "Content"
 GROUPS_WS = "Groups"
 DOCS_WS = "Docs"
+MENU_WS = "Menu"
 
 HEADERS = {
     USERS_WS:   ["ID", "Имя", "Роль", "Отделы", "Статус", "Язык"],
@@ -142,6 +157,8 @@ HEADERS = {
     GROUPS_WS:  ["ChatID", "Название группы", "Локаль", "Тип"],
     DOCS_WS:    ["Дата", "Время", "Локаль", "Тип", "Автор",
                  "ChatID", "MessageID", "FileID", "Текст", "Статус"],
+    MENU_WS:    ["Локаль", "Группа", "Подгруппа", "Блюдо", "Ед",
+                 "Цена", "Себестоимость", "ФК%"],
 }
 
 _cache = {}
@@ -275,6 +292,77 @@ def today_stats():
     return stats
 
 
+# ---------------- МЕНЮ ----------------
+
+def _f(v):
+    """Число из ячейки: терпит запятую и пробелы."""
+    s = str(v).replace("\xa0", "").replace(" ", "").replace(",", ".").strip()
+    if not s or s.lower() in ("none", "nan"):
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def menu_rows(loc: str):
+    out = []
+    for r in rows(MENU_WS):
+        locs = str(r.get("Локаль", "")).replace(" ", "").lower()
+        if locs and locs != "all" and loc not in locs.split(","):
+            continue
+        if not str(r.get("Блюдо", "")).strip():
+            continue
+        out.append(r)
+    return out
+
+
+def menu_groups(loc: str):
+    seen, out = set(), []
+    for r in menu_rows(loc):
+        g = str(r.get("Группа", "")).strip()
+        if g and g not in seen:
+            seen.add(g)
+            out.append(g)
+    return out
+
+
+def menu_subs(loc: str, group: str):
+    seen, out = set(), []
+    for r in menu_rows(loc):
+        if str(r.get("Группа", "")).strip() != group:
+            continue
+        s = str(r.get("Подгруппа", "")).strip()
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
+def menu_dishes(loc: str, group: str, sub: str):
+    return [r for r in menu_rows(loc)
+            if str(r.get("Группа", "")).strip() == group
+            and str(r.get("Подгруппа", "")).strip() == sub]
+
+
+def fc_report(loc: str):
+    """Худшие блюда по фуд косту + проблемные записи."""
+    worst, no_card, zero_price = [], 0, 0
+    for r in menu_rows(loc):
+        price, cost, fc = _f(r.get("Цена")), _f(r.get("Себестоимость")), _f(r.get("ФК%"))
+        if cost is None:
+            no_card += 1
+            continue
+        if not price:
+            zero_price += 1
+            continue
+        if fc:
+            worst.append((fc, str(r.get("Блюдо")).strip(), price, cost,
+                          str(r.get("Группа")).strip()))
+    worst.sort(reverse=True)
+    return worst, no_card, zero_price
+
+
 # ---------------- БОТ ----------------
 
 bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -302,9 +390,6 @@ def kb_home(u) -> InlineKeyboardMarkup:
         kb.append([InlineKeyboardButton(text=f"{d['emoji']} {dept_name(code, lang)}",
                                         callback_data=f"d:{code}")])
     if is_patron(u):
-        kb.append([InlineKeyboardButton(text=t("today", lang), callback_data="today")])
-        n = len(pending_docs())
-        kb.append([InlineKeyboardButton(text=f"{t('queue', lang)} ({n})", callback_data="q")])
         kb.append([InlineKeyboardButton(text=t("staff", lang), callback_data="staff")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
@@ -461,6 +546,8 @@ async def cb_dept(c: CallbackQuery):
     kb = [[InlineKeyboardButton(text=f"{l['emoji']} {l['name']}", callback_data=f"l:{dept}:{code}")]
           for code, l in LOCALES.items()]
     if dept == "stock" and is_patron(u):
+        n = len(pending_docs())
+        kb.insert(0, [InlineKeyboardButton(text=f"{t('queue', lang)} ({n})", callback_data="q")])
         kb.insert(0, [InlineKeyboardButton(text=t("today", lang), callback_data="today")])
     kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="home")])
     await take_over(c, f"{crumb(dept, lang)}\n\n{t('choose_locale', lang)}",
@@ -479,6 +566,27 @@ async def cb_loc(c: CallbackQuery):
     if dept not in DEPTS or loc not in LOCALES:
         await c.answer()
         return
+
+    if dept == "menu":
+        groups = menu_groups(loc)
+        if not groups:
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=t("back", lang), callback_data="d:menu")]])
+            await take_over(c, f"{crumb(dept, lang, loc)}\n\n<i>{t('empty', lang)}</i>", kb)
+            await c.answer()
+            return
+        kb = []
+        if is_patron(u):
+            kb.append([InlineKeyboardButton(text=t("fc_btn", lang), callback_data=f"fc:{loc}")])
+        for i, g in enumerate(groups):
+            n = len([r for r in menu_rows(loc) if str(r.get("Группа", "")).strip() == g])
+            kb.append([InlineKeyboardButton(text=f"{g}  ·  {n}", callback_data=f"mg:{loc}:{i}")])
+        kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="d:menu")])
+        await take_over(c, f"{crumb(dept, lang, loc)}\n\n{t('choose_item', lang)}",
+                        InlineKeyboardMarkup(inline_keyboard=kb))
+        await c.answer()
+        return
+
     items = sections(dept, loc, lang)
     if not items:
         text = f"{crumb(dept, lang, loc)}\n\n<i>{t('empty', lang)}</i>"
@@ -517,6 +625,128 @@ async def cb_section(c: CallbackQuery):
     await c.answer()
 
 
+@dp.callback_query(F.data.startswith("mg:"))
+async def cb_menu_group(c: CallbackQuery):
+    u = guard(c)
+    if not u:
+        await c.answer(t("no_access", DEFAULT_LANG), show_alert=True)
+        return
+    lang = ulang(u)
+    _, loc, gi = c.data.split(":")
+    groups = menu_groups(loc)
+    try:
+        g = groups[int(gi)]
+    except (ValueError, IndexError):
+        await c.answer()
+        return
+    subs = menu_subs(loc, g)
+    kb = []
+    for i, s in enumerate(subs):
+        n = len(menu_dishes(loc, g, s))
+        label = s if s else "—"
+        kb.append([InlineKeyboardButton(text=f"{label[:45]}  ·  {n}",
+                                        callback_data=f"ms:{loc}:{gi}:{i}")])
+    kb.append([InlineKeyboardButton(text=t("back", lang), callback_data=f"l:menu:{loc}")])
+    head = f"{LOCALES[loc]['emoji']} {LOCALES[loc]['name']}\n🍽 <b>{g}</b>"
+    await take_over(c, head, InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("ms:"))
+async def cb_menu_sub(c: CallbackQuery):
+    u = guard(c)
+    if not u:
+        await c.answer(t("no_access", DEFAULT_LANG), show_alert=True)
+        return
+    lang = ulang(u)
+    _, loc, gi, si = c.data.split(":")
+    groups = menu_groups(loc)
+    try:
+        g = groups[int(gi)]
+        s = menu_subs(loc, g)[int(si)]
+    except (ValueError, IndexError):
+        await c.answer()
+        return
+    dishes = menu_dishes(loc, g, s)
+    kb = []
+    for i, r in enumerate(dishes[:80]):
+        price = _f(r.get("Цена"))
+        fc = _f(r.get("ФК%"))
+        mark = " ⚠️" if (fc and fc > FC_LIMIT) else ""
+        p = f"{price:.2f}€" if price else "—"
+        kb.append([InlineKeyboardButton(
+            text=f"{str(r.get('Блюдо'))[:34]}  {p}{mark}",
+            callback_data=f"md:{loc}:{gi}:{si}:{i}")])
+    kb.append([InlineKeyboardButton(text=t("back", lang), callback_data=f"mg:{loc}:{gi}")])
+    head = f"🍽 {g}\n<b>{s or '—'}</b>  ·  {len(dishes)} {t('dishes', lang)}"
+    await take_over(c, head, InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("md:"))
+async def cb_menu_dish(c: CallbackQuery):
+    u = guard(c)
+    if not u:
+        await c.answer(t("no_access", DEFAULT_LANG), show_alert=True)
+        return
+    lang = ulang(u)
+    _, loc, gi, si, di = c.data.split(":")
+    try:
+        g = menu_groups(loc)[int(gi)]
+        s = menu_subs(loc, g)[int(si)]
+        r = menu_dishes(loc, g, s)[int(di)]
+    except (ValueError, IndexError):
+        await c.answer()
+        return
+    price, cost, fc = _f(r.get("Цена")), _f(r.get("Себестоимость")), _f(r.get("ФК%"))
+    lines = [f"<b>{r.get('Блюдо')}</b>", f"<i>{g} · {s}</i>", ""]
+    lines.append(f"{t('price', lang)}: {price:.2f} €" if price else f"{t('price', lang)}: — ({t('zero_price', lang)})")
+    if cost is None:
+        lines.append(f"{t('cost', lang)}: — ({t('no_card', lang)})")
+    else:
+        lines.append(f"{t('cost', lang)}: {cost:.2f} €")
+    if fc:
+        flag = "🔴" if fc > FC_LIMIT else "🟢"
+        lines.append(f"Food cost: {flag} <b>{fc:.1f}%</b>")
+    if price and cost is not None:
+        lines.append(f"{t('margin', lang)}: {price - cost:.2f} €")
+    if r.get("Ед"):
+        lines.append(f"\n<i>{r.get('Ед')}</i>")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t("back", lang), callback_data=f"ms:{loc}:{gi}:{si}")],
+        [InlineKeyboardButton(text=t("home", lang), callback_data="home")]])
+    await take_over(c, "\n".join(lines), kb)
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("fc:"))
+async def cb_foodcost(c: CallbackQuery):
+    u = guard(c)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    lang = ulang(u)
+    loc = c.data.split(":")[1]
+    worst, no_card, zero_price = fc_report(loc)
+    if not worst:
+        text = t("fc_none", lang)
+    else:
+        lines = [f"📊 <b>{t('fc_title', lang)}</b> · {LOCALES[loc]['name']}",
+                 f"<i>порог {FC_LIMIT:.0f}%</i>\n"]
+        for fc, name, price, cost, g in worst[:20]:
+            lines.append(f"🔴 <b>{fc:5.1f}%</b>  {name[:32]}\n"
+                         f"      {price:.2f} € → {cost:.2f} €  ·  {g}")
+        over = len([1 for w in worst if w[0] > FC_LIMIT])
+        lines.append(f"\nВыше порога: <b>{over}</b> из {len(worst)}")
+        lines.append(f"{t('no_card', lang)}: {no_card}  ·  {t('zero_price', lang)}: {zero_price}")
+        text = "\n".join(lines)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t("refresh", lang), callback_data=f"fc:{loc}")],
+        [InlineKeyboardButton(text=t("back", lang), callback_data=f"l:menu:{loc}")]])
+    await take_over(c, text[:4000], kb)
+    await c.answer()
+
+
 @dp.callback_query(F.data == "today")
 async def cb_today(c: CallbackQuery):
     u = guard(c)
@@ -540,7 +770,7 @@ async def cb_today(c: CallbackQuery):
         lines.append(f"\n<i>{t('nothing_today', lang)}</i>")
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=t("refresh", lang), callback_data="today")],
-        [InlineKeyboardButton(text=t("back", lang), callback_data="home")]])
+        [InlineKeyboardButton(text=t("back", lang), callback_data="d:stock")]])
     await take_over(c, "\n".join(lines)[:4000], kb)
     await c.answer()
 
@@ -566,7 +796,7 @@ async def cb_queue(c: CallbackQuery):
         text = "\n".join(lines)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=t("refresh", lang), callback_data="q")],
-        [InlineKeyboardButton(text=t("back", lang), callback_data="home")]])
+        [InlineKeyboardButton(text=t("back", lang), callback_data="d:stock")]])
     await take_over(c, text[:4000], kb)
     await c.answer()
 
