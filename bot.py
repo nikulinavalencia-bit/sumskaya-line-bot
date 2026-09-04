@@ -47,11 +47,12 @@ DEPTS = {
     "ops":   {"emoji": "⚙️"},
     "fin":   {"emoji": "💶"},
     "stock": {"emoji": "📦"},
-    "menu":  {"emoji": "🍽"},
     "mkt":   {"emoji": "📣"},
     "hr":    {"emoji": "👥"},
     "it":    {"emoji": "🖥"},
 }
+
+MENU_EMOJI = "🍽"          # раздел «Меню и фуд кост» живёт внутри Склада
 
 FC_LIMIT = 30.0  # порог фуд коста, %
 
@@ -113,6 +114,7 @@ T = {
 
     "queue":       {"es": "📥 Cola de documentos", "ru": "📥 Очередь документов", "en": "📥 Document queue"},
     "queue_empty": {"es": "Todo procesado.", "ru": "Всё обработано.", "en": "All processed."},
+    "queue_hint":  {"es": "Pulsa para abrir y reenviar.", "ru": "Нажмите, чтобы открыть и переслать.", "en": "Tap to open and forward."},
     "staff":       {"es": "👤 Personal", "ru": "👤 Персонал", "en": "👤 Staff"},
     "sent_btn":    {"es": "✅ Enviado a bilz", "ru": "✅ Отправлено в bilz", "en": "✅ Sent to bilz"},
     "sent_done":   {"es": "✅ Enviado", "ru": "✅ Отправлено", "en": "✅ Sent"},
@@ -173,13 +175,47 @@ _cache = {}
 CACHE_TTL = 45
 
 
+def _norm(s: str) -> str:
+    return " ".join(str(s).split()).strip().lower()
+
+
+_ws_cache = {}
+
+
 def ws(name: str):
-    try:
-        return _sh.worksheet(name)
-    except gspread.WorksheetNotFound:
-        w = _sh.add_worksheet(title=name, rows=1000, cols=14)
-        w.append_row(HEADERS.get(name, []))
+    """
+    Находит лист по имени, прощая мусор вокруг:
+    лишние пробелы, регистр и суффиксы импорта — 'Menu 1', 'Menu (2)'.
+    """
+    if name in _ws_cache:
+        return _ws_cache[name]
+    target = _norm(name)
+    sheets = _sh.worksheets()
+
+    # точное совпадение
+    for w in sheets:
+        if _norm(w.title) == target:
+            _ws_cache[name] = w
+            return w
+
+    # 'Menu 1', 'Menu (2)', 'Menu-копия' — берём самый свежий подходящий
+    cands = []
+    for w in sheets:
+        n = _norm(w.title)
+        if n.startswith(target) and n != target:
+            tail = n[len(target):].strip(" ()-_")
+            if tail.isdigit() or tail in ("copy", "копия", ""):
+                cands.append(w)
+    if cands:
+        w = cands[-1]
+        log.warning("лист '%s' не найден, использую '%s'", name, w.title)
+        _ws_cache[name] = w
         return w
+
+    w = _sh.add_worksheet(title=name, rows=1000, cols=14)
+    w.append_row(HEADERS.get(name, []))
+    _ws_cache[name] = w
+    return w
 
 
 def ensure_headers():
@@ -417,13 +453,14 @@ def kb_home(u) -> InlineKeyboardMarkup:
 
 def home_text(u) -> str:
     lang = ulang(u)
-    return (f"<b>{COMPANY}</b>\n"
-            f"{u.get('Имя')} · {role_name(u.get('Роль'), lang)}\n\n"
-            f"{t('choose_dept', lang)}")
+    return f"<b>{COMPANY}</b>\n\n{t('choose_dept', lang)}"
 
 
 def crumb(dept: str, lang: str, loc: str = None) -> str:
-    s = f"{DEPTS[dept]['emoji']} <b>{dept_name(dept, lang)}</b>"
+    if dept == "menu":
+        s = f"{MENU_EMOJI} <b>{dept_name('menu', lang)}</b>"
+    else:
+        s = f"{DEPTS[dept]['emoji']} <b>{dept_name(dept, lang)}</b>"
     if loc:
         s += f"\n{LOCALES[loc]['emoji']} {LOCALES[loc]['name']}"
     return s
@@ -496,28 +533,7 @@ async def group_intake(m: Message):
         return
 
     author = m.from_user.full_name if m.from_user else "—"
-    row_idx = save_doc(loc, typ, author, m.chat.id, m.message_id, file_id, text)
-
-    for p in patrons():
-        pu = get_user(p)
-        lang = ulang(pu)
-        L = LOCALES[loc]
-        card = (f"{DOCTYPES[typ]['emoji']} <b>{doc_name(typ, lang)}</b> · {L['emoji']} {L['name']}\n"
-                f"{t('from', lang)}: {author}\n"
-                f"{datetime.now().strftime('%d.%m.%Y %H:%M')}")
-        if text:
-            card += f"\n\n{text[:600]}"
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text=t("sent_btn", lang), callback_data=f"sent:{row_idx}")]])
-        try:
-            if file_id and is_photo:
-                await bot.send_photo(p, file_id, caption=card, reply_markup=kb)
-            elif file_id:
-                await bot.send_document(p, file_id, caption=card, reply_markup=kb)
-            else:
-                await bot.send_message(p, card, reply_markup=kb)
-        except Exception as e:
-            log.warning("deliver failed: %s", e)
+    save_doc(loc, typ, author, m.chat.id, m.message_id, file_id, text)
 
 
 # ---------------- КОЛБЭКИ ----------------
@@ -566,12 +582,30 @@ async def cb_dept(c: CallbackQuery):
         return
     kb = [[InlineKeyboardButton(text=f"{l['emoji']} {l['name']}", callback_data=f"l:{dept}:{code}")]
           for code, l in LOCALES.items()]
-    if dept == "stock" and is_patron(u):
-        n = len(pending_docs())
-        kb.insert(0, [InlineKeyboardButton(text=f"{t('queue', lang)} ({n})", callback_data="q")])
-        kb.insert(0, [InlineKeyboardButton(text=t("today", lang), callback_data="today")])
+    if dept == "stock":
+        kb.insert(0, [InlineKeyboardButton(
+            text=f"{MENU_EMOJI} {dept_name('menu', lang)}", callback_data="menu")])
+        if is_patron(u):
+            n = len(pending_docs())
+            kb.insert(0, [InlineKeyboardButton(text=f"{t('queue', lang)} ({n})", callback_data="q")])
+            kb.insert(0, [InlineKeyboardButton(text=t("today", lang), callback_data="today")])
     kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="home")])
     await take_over(c, f"{crumb(dept, lang)}\n\n{t('choose_locale', lang)}",
+                    InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.answer()
+
+
+@dp.callback_query(F.data == "menu")
+async def cb_menu_root(c: CallbackQuery):
+    u = guard(c)
+    if not u:
+        await c.answer(t("no_access", DEFAULT_LANG), show_alert=True)
+        return
+    lang = ulang(u)
+    kb = [[InlineKeyboardButton(text=f"{l['emoji']} {l['name']}", callback_data=f"l:menu:{code}")]
+          for code, l in LOCALES.items()]
+    kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="d:stock")])
+    await take_over(c, f"{crumb('menu', lang)}\n\n{t('choose_locale', lang)}",
                     InlineKeyboardMarkup(inline_keyboard=kb))
     await c.answer()
 
@@ -584,7 +618,7 @@ async def cb_loc(c: CallbackQuery):
         return
     lang = ulang(u)
     _, dept, loc = c.data.split(":")
-    if dept not in DEPTS or loc not in LOCALES:
+    if (dept not in DEPTS and dept != "menu") or loc not in LOCALES:
         await c.answer()
         return
 
@@ -592,7 +626,7 @@ async def cb_loc(c: CallbackQuery):
         groups = menu_groups(loc)
         if not groups:
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=t("back", lang), callback_data="d:menu")]])
+                [InlineKeyboardButton(text=t("back", lang), callback_data="menu")]])
             await take_over(c, f"{crumb(dept, lang, loc)}\n\n<i>{t('empty', lang)}</i>", kb)
             await c.answer()
             return
@@ -602,7 +636,7 @@ async def cb_loc(c: CallbackQuery):
         for i, g in enumerate(groups):
             n = len([r for r in menu_rows(loc) if str(r.get("Группа", "")).strip() == g])
             kb.append([InlineKeyboardButton(text=f"{g}  ·  {n}", callback_data=f"mg:{loc}:{i}")])
-        kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="d:menu")])
+        kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="menu")])
         await take_over(c, f"{crumb(dept, lang, loc)}\n\n{t('choose_item', lang)}",
                         InlineKeyboardMarkup(inline_keyboard=kb))
         await c.answer()
@@ -848,19 +882,64 @@ async def cb_queue(c: CallbackQuery):
     items = pending_docs()
     if not items:
         text = f"<b>{t('queue', lang)}</b>\n\n{t('queue_empty', lang)}"
+        kb = [[InlineKeyboardButton(text=t("refresh", lang), callback_data="q")],
+              [InlineKeyboardButton(text=t("back", lang), callback_data="d:stock")]]
     else:
-        lines = [f"<b>{t('queue', lang)}</b> — {len(items)}\n"]
-        for _, r in items[:30]:
+        text = (f"<b>{t('queue', lang)}</b> — {len(items)}\n\n"
+                f"<i>{t('queue_hint', lang)}</i>")
+        kb = []
+        for idx, r in items[:40]:
             loc = str(r.get("Локаль")).strip()
             typ = str(r.get("Тип")).strip()
-            lines.append(f"• {r.get('Дата')} {r.get('Время')} · "
-                         f"{LOCALES.get(loc, {}).get('name', loc)} · "
-                         f"{doc_name(typ, lang) if typ in DOCTYPES else typ} · {r.get('Автор')}")
-        text = "\n".join(lines)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t("refresh", lang), callback_data="q")],
-        [InlineKeyboardButton(text=t("back", lang), callback_data="d:stock")]])
-    await take_over(c, text[:4000], kb)
+            L = LOCALES.get(loc, {})
+            label = (f"{DOCTYPES.get(typ, {}).get('emoji', '📄')} "
+                     f"{L.get('emoji', '')} {L.get('name', loc)} · "
+                     f"{r.get('Дата')} {r.get('Время')}")
+            kb.append([InlineKeyboardButton(text=label[:60], callback_data=f"qd:{idx}")])
+        kb.append([InlineKeyboardButton(text=t("refresh", lang), callback_data="q")])
+        kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="d:stock")])
+    await take_over(c, text[:4000], InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("qd:"))
+async def cb_queue_doc(c: CallbackQuery):
+    u = get_user(c.from_user.id)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    lang = ulang(u)
+    idx = int(c.data.split(":")[1])
+    data = rows(DOCS_WS, force=True)
+    try:
+        r = data[idx - 2]
+    except IndexError:
+        await c.answer("—", show_alert=True)
+        return
+    loc = str(r.get("Локаль")).strip()
+    typ = str(r.get("Тип")).strip()
+    L = LOCALES.get(loc, {})
+    cap = (f"{DOCTYPES.get(typ, {}).get('emoji', '📄')} <b>{doc_name(typ, lang) if typ in DOCTYPES else typ}</b>"
+           f" · {L.get('emoji', '')} {L.get('name', loc)}\n"
+           f"{t('from', lang)}: {r.get('Автор')}\n{r.get('Дата')} {r.get('Время')}")
+    txt = str(r.get("Текст") or "").strip()
+    if txt:
+        cap += f"\n\n{txt[:800]}"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=t("sent_btn", lang), callback_data=f"sent:{idx}")]])
+    fid = str(r.get("FileID") or "").strip()
+    try:
+        if fid:
+            try:
+                await bot.send_photo(c.from_user.id, fid, caption=cap[:1000], reply_markup=kb)
+            except Exception:
+                await bot.send_document(c.from_user.id, fid, caption=cap[:1000], reply_markup=kb)
+        else:
+            await bot.send_message(c.from_user.id, cap[:4000], reply_markup=kb)
+    except Exception as e:
+        log.warning("open doc failed: %s", e)
+        await c.answer("Не удалось открыть", show_alert=True)
+        return
     await c.answer()
 
 
