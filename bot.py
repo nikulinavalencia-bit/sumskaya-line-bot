@@ -82,6 +82,11 @@ T = {
     "cost":       {"es": "Coste",                 "ru": "Себестоимость",      "en": "Cost"},
     "margin":     {"es": "Margen",                "ru": "Наценка",            "en": "Margin"},
     "dishes":     {"es": "platos",                "ru": "блюд",               "en": "dishes"},
+    "tech":       {"es": "📋 Ficha técnica", "ru": "📋 Техкарта", "en": "📋 Tech card"},
+    "tech_none":  {"es": "Sin ficha técnica.", "ru": "Техкарты нет.", "en": "No tech card."},
+    "yield_w":    {"es": "Peso final",  "ru": "Выход",   "en": "Yield"},
+    "gross":      {"es": "Bruto",       "ru": "Брутто",  "en": "Gross"},
+    "net":        {"es": "Neto",        "ru": "Нетто",   "en": "Net"},
     "dept_mkt":   {"es": "Marketing",          "ru": "Маркетинг",            "en": "Marketing"},
     "dept_hr":    {"es": "RRHH",               "ru": "HR",                   "en": "HR"},
     "dept_it":    {"es": "Soporte IT",         "ru": "IT-суппорт программ",  "en": "IT support"},
@@ -150,6 +155,7 @@ CONTENT_WS = "Content"
 GROUPS_WS = "Groups"
 DOCS_WS = "Docs"
 MENU_WS = "Menu"
+TECH_WS = "TechCards"
 
 HEADERS = {
     USERS_WS:   ["ID", "Имя", "Роль", "Отделы", "Статус", "Язык"],
@@ -159,6 +165,8 @@ HEADERS = {
                  "ChatID", "MessageID", "FileID", "Текст", "Статус"],
     MENU_WS:    ["Локаль", "Группа", "Подгруппа", "Блюдо", "Ед",
                  "Цена", "Себестоимость", "ФК%"],
+    TECH_WS:    ["Блюдо", "Карта №", "Дата", "№", "Ингредиент", "Ед",
+                 "Брутто", "Нетто", "Итого вес, кг", "На выход"],
 }
 
 _cache = {}
@@ -343,6 +351,19 @@ def menu_dishes(loc: str, group: str, sub: str):
     return [r for r in menu_rows(loc)
             if str(r.get("Группа", "")).strip() == group
             and str(r.get("Подгруппа", "")).strip() == sub]
+
+
+def tech_card(dish: str):
+    """Строки техкарты по названию блюда (без учёта регистра и пробелов)."""
+    key = " ".join(str(dish).split()).lower()
+    out = [r for r in rows(TECH_WS)
+           if " ".join(str(r.get("Блюдо", "")).split()).lower() == key]
+    def k(r):
+        try:
+            return int(r.get("№") or 0)
+        except (TypeError, ValueError):
+            return 0
+    return sorted(out, key=k)
 
 
 def fc_report(loc: str):
@@ -712,10 +733,52 @@ async def cb_menu_dish(c: CallbackQuery):
         lines.append(f"{t('margin', lang)}: {price - cost:.2f} €")
     if r.get("Ед"):
         lines.append(f"\n<i>{r.get('Ед')}</i>")
+    kb_rows = []
+    if tech_card(str(r.get("Блюдо"))):
+        kb_rows.append([InlineKeyboardButton(
+            text=t("tech", lang), callback_data=f"tc:{loc}:{gi}:{si}:{di}")])
+    kb_rows.append([InlineKeyboardButton(text=t("back", lang), callback_data=f"ms:{loc}:{gi}:{si}")])
+    kb_rows.append([InlineKeyboardButton(text=t("home", lang), callback_data="home")])
+    await take_over(c, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=kb_rows))
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("tc:"))
+async def cb_tech(c: CallbackQuery):
+    u = guard(c)
+    if not u:
+        await c.answer(t("no_access", DEFAULT_LANG), show_alert=True)
+        return
+    lang = ulang(u)
+    _, loc, gi, si, di = c.data.split(":")
+    try:
+        g = menu_groups(loc)[int(gi)]
+        s = menu_subs(loc, g)[int(si)]
+        r = menu_dishes(loc, g, s)[int(di)]
+    except (ValueError, IndexError):
+        await c.answer()
+        return
+    dish = str(r.get("Блюдо"))
+    card = tech_card(dish)
+    if not card:
+        await c.answer(t("tech_none", lang), show_alert=True)
+        return
+    head = card[0]
+    lines = [f"📋 <b>{dish}</b>",
+             f"<i>№ {head.get('Карта №')} · {head.get('Дата')}</i>", ""]
+    for row in card:
+        br, net = _f(row.get("Брутто")), _f(row.get("Нетто"))
+        lines.append(f"{row.get('№')}. <b>{row.get('Ингредиент')}</b>  ({row.get('Ед')})")
+        lines.append(f"      {t('gross', lang)} {br:.3f}  ·  {t('net', lang)} {net:.3f}"
+                     if br is not None and net is not None else "      —")
+    total = _f(head.get("Итого вес, кг"))
+    if total:
+        lines.append(f"\n<b>{t('yield_w', lang)}: {total:.3f} кг</b>")
+    if head.get("На выход"):
+        lines.append(f"<i>на {head.get('На выход')}</i>")
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t("back", lang), callback_data=f"ms:{loc}:{gi}:{si}")],
-        [InlineKeyboardButton(text=t("home", lang), callback_data="home")]])
-    await take_over(c, "\n".join(lines), kb)
+        [InlineKeyboardButton(text=t("back", lang), callback_data=f"md:{loc}:{gi}:{si}:{di}")]])
+    await take_over(c, "\n".join(lines)[:4000], kb)
     await c.answer()
 
 
