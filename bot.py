@@ -15,7 +15,7 @@ from google.oauth2.service_account import Credentials
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
-    Message, CallbackQuery, ChatMemberUpdated,
+    Message, CallbackQuery, ChatMemberUpdated, InputMediaPhoto,
     InlineKeyboardMarkup, InlineKeyboardButton,
 )
 from aiogram.filters import CommandStart, Command
@@ -119,6 +119,7 @@ T = {
     "queue":       {"es": "📥 Cola de documentos", "ru": "📥 Очередь документов", "en": "📥 Document queue"},
     "queue_empty": {"es": "Todo procesado.", "ru": "Всё обработано.", "en": "All processed."},
     "queue_hint":  {"es": "Pulsa para abrir y reenviar.", "ru": "Нажмите, чтобы открыть и переслать.", "en": "Tap to open and forward."},
+    "archive":     {"es": "🗄 Archivo", "ru": "🗄 Архив", "en": "🗄 Archive"},
     "staff":       {"es": "👤 Personal", "ru": "👤 Персонал", "en": "👤 Staff"},
     "sent_btn":    {"es": "✅ Enviado a bilz", "ru": "✅ Отправлено в bilz", "en": "✅ Sent to bilz"},
     "sent_done":   {"es": "✅ Enviado", "ru": "✅ Отправлено", "en": "✅ Sent"},
@@ -452,6 +453,88 @@ def save_photo(dish: str, file_id: str, who: str):
 _awaiting_photo = {}
 
 
+def nc(v, nd=2) -> str:
+    """Число с запятой, без хвостовых нулей где не нужно."""
+    s = f"{v:.{nd}f}"
+    return s.replace(".", ",")
+
+
+def amount(unit: str, br, net) -> str:
+    """Количество в формате BoiBoi: 40 g, 0,300 kg, 1 uds."""
+    u = str(unit or "").strip().lower()
+    v = net if (net is not None and net > 0) else br
+    if v is None:
+        return "—"
+    if u in ("кг", "kg"):
+        return f"{v * 1000:.0f} g" if v < 1 else f"{nc(v, 3)} kg"
+    if u in ("л", "l"):
+        v2 = br if br else v
+        return f"{v2 * 1000:.0f} ml" if v2 < 1 else f"{nc(v2, 3)} l"
+    v2 = br if br else v
+    return f"{nc(v2, 3)} uds"
+
+
+def render_card(dish: str, sub: str, menu_row, lang: str, emoji: str = "🍽"):
+    """Возвращает (строки текста, список ПФ с собственными картами)."""
+    card = tech_card(dish)
+    lines = [f"{emoji} <b>{dish}</b>"]
+    pf = []
+
+    num = ""
+    if card:
+        num = str(card[0].get("Карта №") or "").strip()
+        if num.isdigit():
+            num = num.zfill(5)
+    head_line = " · ".join([x for x in (sub, f"ТК № {num}" if num else "") if x])
+    if head_line:
+        lines.append(f"<i>{head_line}</i>")
+
+    if card:
+        lines.append("")
+        lines.append("<b>СОСТАВ</b>")
+        for row in card:
+            ing = str(row.get("Ингредиент") or "").strip()
+            a = amount(row.get("Ед"), _f(row.get("Брутто")), _f(row.get("Нетто")))
+            lines.append(f"▸ {ing} — {a}")
+            if has_card(ing):
+                pf.append(ing)
+        total = _f(card[0].get("Итого вес, кг"))
+        out_s = str(card[0].get("На выход") or "").strip()
+        tail = " · ".join([x for x in (out_s, f"{nc(total, 3)} kg" if total else "") if x])
+        if tail:
+            lines.append("")
+            lines.append(f"<b>ВЫХОД:</b> {tail}")
+
+    if menu_row is not None:
+        price, cost, fc = (_f(menu_row.get("Цена")), _f(menu_row.get("Себестоимость")),
+                           _f(menu_row.get("ФК%")))
+        parts = []
+        if fc:
+            parts.append(f"{'🔴' if fc > FC_LIMIT else '🟢'} Food cost {fc:.0f}%")
+        if cost is not None:
+            parts.append(f"coste {nc(cost)} €")
+        if price:
+            parts.append(f"precio {nc(price)} €")
+        if price and cost is not None:
+            parts.append(f"margen {nc(price - cost)} €")
+        if parts:
+            lines.append("")
+            lines.append(" · ".join(parts))
+
+    if not card:
+        lines.append("")
+        lines.append(f"<i>{t('tech_none', lang)}</i>")
+    return lines, pf
+
+
+def menu_row_for(dish: str):
+    key = " ".join(str(dish).split()).lower()
+    for r in rows(MENU_WS):
+        if " ".join(str(r.get("Блюдо", "")).split()).lower() == key:
+            return r
+    return None
+
+
 def fc_report(loc: str):
     """Худшие блюда по фуд косту + проблемные записи."""
     worst, no_card, zero_price = [], 0, 0
@@ -476,14 +559,48 @@ bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
 
-async def take_over(event, text: str, kb: InlineKeyboardMarkup | None = None):
-    if isinstance(event, CallbackQuery):
-        try:
-            await event.message.edit_text(text, reply_markup=kb)
-        except Exception:
-            await event.message.answer(text, reply_markup=kb)
+CAPTION_LIMIT = 1000
+
+
+async def take_over(event, text: str, kb: InlineKeyboardMarkup | None = None,
+                    photo: str | None = None):
+    """
+    Один экран на весь диалог. Если у экрана есть фото — сообщение
+    превращается в фото с подписью, если нет — обратно в текст.
+    """
+    if not isinstance(event, CallbackQuery):
+        if photo:
+            await event.answer_photo(photo, caption=text[:CAPTION_LIMIT], reply_markup=kb)
+        else:
+            await event.answer(text, reply_markup=kb)
         return
-    await event.answer(text, reply_markup=kb)
+
+    msg = event.message
+    chat_id = msg.chat.id
+    is_media = bool(msg.photo)
+
+    try:
+        if photo and is_media:
+            await msg.edit_media(
+                InputMediaPhoto(media=photo, caption=text[:CAPTION_LIMIT],
+                                parse_mode=ParseMode.HTML),
+                reply_markup=kb)
+            return
+        if not photo and not is_media:
+            await msg.edit_text(text, reply_markup=kb)
+            return
+    except Exception as e:
+        log.debug("edit failed: %s", e)
+
+    # тип сообщения меняется — пересоздаём, старое убираем
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+    if photo:
+        await bot.send_photo(chat_id, photo, caption=text[:CAPTION_LIMIT], reply_markup=kb)
+    else:
+        await bot.send_message(chat_id, text, reply_markup=kb)
 
 
 def kb_home(u) -> InlineKeyboardMarkup:
@@ -636,6 +753,7 @@ async def cb_dept(c: CallbackQuery):
         kb.insert(0, [InlineKeyboardButton(
             text=f"{MENU_EMOJI} {dept_name('menu', lang)}", callback_data="menu")])
         if is_patron(u):
+            kb.insert(0, [InlineKeyboardButton(text=t("archive", lang), callback_data="arch")])
             n = len(pending_docs())
             kb.insert(0, [InlineKeyboardButton(text=f"{t('queue', lang)} ({n})", callback_data="q")])
             kb.insert(0, [InlineKeyboardButton(text=t("today", lang), callback_data="today")])
@@ -804,77 +922,17 @@ async def cb_menu_dish(c: CallbackQuery):
         await c.answer()
         return
     dish = str(r.get("Блюдо"))
-    price, cost, fc = _f(r.get("Цена")), _f(r.get("Себестоимость")), _f(r.get("ФК%"))
-    card = tech_card(dish)
+    lines, pf = render_card(dish, s, r, lang, LOCALES[loc]["emoji"])
 
-    lines = [f"<b>{dish}</b>", f"<i>{g} · {s}</i>"]
-    kb_rows = []
-
-    if card:
-        head = card[0]
-        num = str(head.get("Карта №") or "").strip()
-        if num.isdigit():
-            num = num.zfill(5)
-        lines.append(f"<i>📋 № {num} · {head.get('Дата')}</i>")
-        lines.append("")
-        for row in card:
-            ing = str(row.get("Ингредиент") or "").strip()
-            br, net = _f(row.get("Брутто")), _f(row.get("Нетто"))
-            mark = " ▸" if has_card(ing) else ""
-            lines.append(f"{row.get('№')}. <b>{ing}</b>{mark}")
-            if br is not None and net is not None:
-                lines.append(f"      {t('gross', lang)} {br:.3f} · {t('net', lang)} {net:.3f} {row.get('Ед')}")
-            if has_card(ing):
-                kb_rows.append([InlineKeyboardButton(
-                    text=f"📋 {ing[:50]}", callback_data=f"tk:{kkey(ing)}:-")])
-        total = _f(head.get("Итого вес, кг"))
-        if total:
-            out_s = str(head.get("На выход") or "").strip()
-            lines.append(f"\n<b>{t('yield_w', lang)}: {total:.3f} кг</b>"
-                         + (f"  <i>({out_s})</i>" if out_s else ""))
-    else:
-        lines.append("")
-        lines.append(f"<i>{t('tech_none', lang)}</i>")
-
-    lines.append("")
-    lines.append(f"{t('price', lang)}: <b>{price:.2f} €</b>" if price
-                 else f"{t('price', lang)}: — <i>({t('zero_price', lang)})</i>")
-    if cost is None:
-        lines.append(f"{t('cost', lang)}: — <i>({t('no_card', lang)})</i>")
-    else:
-        lines.append(f"{t('cost', lang)}: {cost:.2f} €")
-    if fc:
-        lines.append(f"Food cost: {'🔴' if fc > FC_LIMIT else '🟢'} <b>{fc:.1f}%</b>")
-    if price and cost is not None:
-        lines.append(f"{t('margin', lang)}: {price - cost:.2f} €")
-
-    if dish_photo(dish):
-        kb_rows.append([InlineKeyboardButton(
-            text=t("photo_view", lang), callback_data=f"ph:{kkey(dish)}")])
+    kb_rows = [[InlineKeyboardButton(text=f"📋 {n[:50]}", callback_data=f"tk:{kkey(n)}:-")]
+               for n in pf]
     if u.get("Роль") in (ROLE_PATRON, ROLE_MANAGER):
         kb_rows.append([InlineKeyboardButton(
             text=t("photo_add", lang), callback_data=f"pha:{kkey(dish)}")])
     kb_rows.append([InlineKeyboardButton(text=t("back", lang), callback_data=f"ms:{loc}:{gi}:{si}")])
     kb_rows.append([InlineKeyboardButton(text=t("home", lang), callback_data="home")])
-    await take_over(c, "\n".join(lines)[:4000], InlineKeyboardMarkup(inline_keyboard=kb_rows))
-    await c.answer()
-
-
-@dp.callback_query(F.data.startswith("ph:"))
-async def cb_photo_view(c: CallbackQuery):
-    u = guard(c)
-    if not u:
-        await c.answer(t("no_access", DEFAULT_LANG), show_alert=True)
-        return
-    dish = kname(c.data.split(":")[1])
-    fid = dish_photo(dish) if dish else None
-    if not fid:
-        await c.answer("—", show_alert=True)
-        return
-    try:
-        await bot.send_photo(c.from_user.id, fid, caption=f"<b>{dish}</b>")
-    except Exception as e:
-        log.warning("photo send failed: %s", e)
+    await take_over(c, "\n".join(lines)[:4000], InlineKeyboardMarkup(inline_keyboard=kb_rows),
+                    photo=dish_photo(dish))
     await c.answer()
 
 
@@ -890,9 +948,7 @@ async def cb_photo_add(c: CallbackQuery):
         await c.answer("Откройте блюдо заново", show_alert=True)
         return
     _awaiting_photo[c.from_user.id] = dish
-    await bot.send_message(c.from_user.id,
-                           f"{t('photo_wait', lang)}\n<b>{dish}</b>")
-    await c.answer()
+    await c.answer(t("photo_wait", lang), show_alert=True)
 
 
 @dp.message(F.photo, F.chat.type == "private")
@@ -900,10 +956,18 @@ async def on_private_photo(m: Message):
     dish = _awaiting_photo.pop(m.from_user.id, None)
     if not dish:
         return
-    u = get_user(m.from_user.id)
-    lang = ulang(u)
     save_photo(dish, m.photo[-1].file_id, m.from_user.full_name)
-    await m.answer(f"{t('photo_saved', lang)}\n<b>{dish}</b>")
+    try:
+        await m.delete()          # не копим фото в чате
+    except Exception:
+        pass
+    u = get_user(m.from_user.id)
+    note = await m.answer(f"{t('photo_saved', ulang(u))} <b>{dish}</b>")
+    await asyncio.sleep(3)
+    try:
+        await note.delete()
+    except Exception:
+        pass
 
 
 @dp.callback_query(F.data.startswith("tk:"))
@@ -922,48 +986,18 @@ async def cb_tech(c: CallbackQuery):
     if not card:
         await c.answer(t("tech_none", lang), show_alert=True)
         return
-    head = card[0]
-    num = str(head.get("Карта №") or "").strip()
-    if num.isdigit():
-        num = num.zfill(5)
-    lines = [f"<b>{dish}</b>", f"<i>📋 № {num} · {head.get('Дата')}</i>", ""]
-    kb_rows = []
-    for row in card:
-        ing = str(row.get("Ингредиент") or "").strip()
-        br, net = _f(row.get("Брутто")), _f(row.get("Нетто"))
-        mark = " ▸" if has_card(ing) else ""
-        lines.append(f"{row.get('№')}. <b>{ing}</b>{mark}")
-        if br is not None and net is not None:
-            lines.append(f"      {t('gross', lang)} {br:.3f} · {t('net', lang)} {net:.3f} {row.get('Ед')}")
-        if has_card(ing):
-            kb_rows.append([InlineKeyboardButton(
-                text=f"📋 {ing[:50]}", callback_data=f"tk:{kkey(ing)}:{parts[1]}")])
-    total = _f(head.get("Итого вес, кг"))
-    if total:
-        out_s = str(head.get("На выход") or "").strip()
-        lines.append(f"\n<b>{t('yield_w', lang)}: {total:.3f} кг</b>"
-                     + (f"  <i>({out_s})</i>" if out_s else ""))
-
-    # если полуфабрикат заведён и как позиция меню — покажем экономику
-    for mr in rows(MENU_WS):
-        if " ".join(str(mr.get("Блюдо", "")).split()).lower() == " ".join(dish.split()).lower():
-            price, cost, fc = _f(mr.get("Цена")), _f(mr.get("Себестоимость")), _f(mr.get("ФК%"))
-            lines.append("")
-            if price:
-                lines.append(f"{t('price', lang)}: <b>{price:.2f} €</b>")
-            if cost is not None:
-                lines.append(f"{t('cost', lang)}: {cost:.2f} €")
-            if fc:
-                lines.append(f"Food cost: {'🔴' if fc > FC_LIMIT else '🟢'} <b>{fc:.1f}%</b>")
-            if price and cost is not None:
-                lines.append(f"{t('margin', lang)}: {price - cost:.2f} €")
-            break
-
+    lines, pf = render_card(dish, "", menu_row_for(dish), lang, "📋")
+    kb_rows = [[InlineKeyboardButton(text=f"📋 {n[:50]}", callback_data=f"tk:{kkey(n)}:{parts[1]}")]
+               for n in pf]
+    if u.get("Роль") in (ROLE_PATRON, ROLE_MANAGER):
+        kb_rows.append([InlineKeyboardButton(
+            text=t("photo_add", lang), callback_data=f"pha:{kkey(dish)}")])
     if parent and parent != "-":
         kb_rows.append([InlineKeyboardButton(
             text=t("back", lang), callback_data=f"tk:{parent}:-")])
     kb_rows.append([InlineKeyboardButton(text=t("home", lang), callback_data="home")])
-    await take_over(c, "\n".join(lines)[:4000], InlineKeyboardMarkup(inline_keyboard=kb_rows))
+    await take_over(c, "\n".join(lines)[:4000], InlineKeyboardMarkup(inline_keyboard=kb_rows),
+                    photo=dish_photo(dish))
     await c.answer()
 
 
@@ -1070,27 +1104,50 @@ async def cb_queue_doc(c: CallbackQuery):
     loc = str(r.get("Локаль")).strip()
     typ = str(r.get("Тип")).strip()
     L = LOCALES.get(loc, {})
-    cap = (f"{DOCTYPES.get(typ, {}).get('emoji', '📄')} <b>{doc_name(typ, lang) if typ in DOCTYPES else typ}</b>"
+    done = str(r.get("Статус")).strip() != "новый"
+    cap = (f"{DOCTYPES.get(typ, {}).get('emoji', '📄')} "
+           f"<b>{doc_name(typ, lang) if typ in DOCTYPES else typ}</b>"
            f" · {L.get('emoji', '')} {L.get('name', loc)}\n"
            f"{t('from', lang)}: {r.get('Автор')}\n{r.get('Дата')} {r.get('Время')}")
     txt = str(r.get("Текст") or "").strip()
     if txt:
-        cap += f"\n\n{txt[:800]}"
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=t("sent_btn", lang), callback_data=f"sent:{idx}")]])
-    fid = str(r.get("FileID") or "").strip()
-    try:
-        if fid:
-            try:
-                await bot.send_photo(c.from_user.id, fid, caption=cap[:1000], reply_markup=kb)
-            except Exception:
-                await bot.send_document(c.from_user.id, fid, caption=cap[:1000], reply_markup=kb)
-        else:
-            await bot.send_message(c.from_user.id, cap[:4000], reply_markup=kb)
-    except Exception as e:
-        log.warning("open doc failed: %s", e)
-        await c.answer("Не удалось открыть", show_alert=True)
+        cap += f"\n\n{txt[:600]}"
+    kb = []
+    if not done:
+        kb.append([InlineKeyboardButton(text=t("sent_btn", lang), callback_data=f"sent:{idx}")])
+    kb.append([InlineKeyboardButton(text=t("back", lang),
+                                    callback_data="q" if not done else "arch")])
+    fid = str(r.get("FileID") or "").strip() or None
+    await take_over(c, cap, InlineKeyboardMarkup(inline_keyboard=kb), photo=fid)
+    await c.answer()
+
+
+@dp.callback_query(F.data == "arch")
+async def cb_archive(c: CallbackQuery):
+    u = get_user(c.from_user.id)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
         return
+    lang = ulang(u)
+    done = [(i, r) for i, r in enumerate(rows(DOCS_WS, force=True), start=2)
+            if str(r.get("Статус")).strip() and str(r.get("Статус")).strip() != "новый"]
+    done.reverse()
+    if not done:
+        text = f"<b>{t('archive', lang)}</b>\n\n—"
+        kb = []
+    else:
+        text = f"<b>{t('archive', lang)}</b> — {len(done)}"
+        kb = []
+        for idx, r in done[:40]:
+            loc = str(r.get("Локаль")).strip()
+            typ = str(r.get("Тип")).strip()
+            L = LOCALES.get(loc, {})
+            label = (f"{DOCTYPES.get(typ, {}).get('emoji', '📄')} "
+                     f"{L.get('emoji', '')} {L.get('name', loc)} · "
+                     f"{r.get('Дата')} {r.get('Время')}")
+            kb.append([InlineKeyboardButton(text=label[:60], callback_data=f"qd:{idx}")])
+    kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="d:stock")])
+    await take_over(c, text[:4000], InlineKeyboardMarkup(inline_keyboard=kb))
     await c.answer()
 
 
@@ -1102,12 +1159,9 @@ async def cb_sent(c: CallbackQuery):
         return
     lang = ulang(u)
     set_doc_status(int(c.data.split(":")[1]), "отправлено")
-    try:
-        await c.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text=t("sent_done", lang), callback_data="noop")]]))
-    except Exception:
-        pass
     await c.answer(t("marked", lang))
+    c.data = "q"
+    await cb_queue(c)
 
 
 @dp.callback_query(F.data == "noop")
