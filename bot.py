@@ -803,34 +803,60 @@ async def cb_menu_dish(c: CallbackQuery):
     except (ValueError, IndexError):
         await c.answer()
         return
+    dish = str(r.get("Блюдо"))
     price, cost, fc = _f(r.get("Цена")), _f(r.get("Себестоимость")), _f(r.get("ФК%"))
-    lines = [f"<b>{r.get('Блюдо')}</b>", f"<i>{g} · {s}</i>", ""]
-    lines.append(f"{t('price', lang)}: {price:.2f} €" if price else f"{t('price', lang)}: — ({t('zero_price', lang)})")
+    card = tech_card(dish)
+
+    lines = [f"<b>{dish}</b>", f"<i>{g} · {s}</i>"]
+    kb_rows = []
+
+    if card:
+        head = card[0]
+        num = str(head.get("Карта №") or "").strip()
+        if num.isdigit():
+            num = num.zfill(5)
+        lines.append(f"<i>📋 № {num} · {head.get('Дата')}</i>")
+        lines.append("")
+        for row in card:
+            ing = str(row.get("Ингредиент") or "").strip()
+            br, net = _f(row.get("Брутто")), _f(row.get("Нетто"))
+            mark = " ▸" if has_card(ing) else ""
+            lines.append(f"{row.get('№')}. <b>{ing}</b>{mark}")
+            if br is not None and net is not None:
+                lines.append(f"      {t('gross', lang)} {br:.3f} · {t('net', lang)} {net:.3f} {row.get('Ед')}")
+            if has_card(ing):
+                kb_rows.append([InlineKeyboardButton(
+                    text=f"📋 {ing[:50]}", callback_data=f"tk:{kkey(ing)}:-")])
+        total = _f(head.get("Итого вес, кг"))
+        if total:
+            out_s = str(head.get("На выход") or "").strip()
+            lines.append(f"\n<b>{t('yield_w', lang)}: {total:.3f} кг</b>"
+                         + (f"  <i>({out_s})</i>" if out_s else ""))
+    else:
+        lines.append("")
+        lines.append(f"<i>{t('tech_none', lang)}</i>")
+
+    lines.append("")
+    lines.append(f"{t('price', lang)}: <b>{price:.2f} €</b>" if price
+                 else f"{t('price', lang)}: — <i>({t('zero_price', lang)})</i>")
     if cost is None:
-        lines.append(f"{t('cost', lang)}: — ({t('no_card', lang)})")
+        lines.append(f"{t('cost', lang)}: — <i>({t('no_card', lang)})</i>")
     else:
         lines.append(f"{t('cost', lang)}: {cost:.2f} €")
     if fc:
-        flag = "🔴" if fc > FC_LIMIT else "🟢"
-        lines.append(f"Food cost: {flag} <b>{fc:.1f}%</b>")
+        lines.append(f"Food cost: {'🔴' if fc > FC_LIMIT else '🟢'} <b>{fc:.1f}%</b>")
     if price and cost is not None:
         lines.append(f"{t('margin', lang)}: {price - cost:.2f} €")
-    if r.get("Ед"):
-        lines.append(f"\n<i>{r.get('Ед')}</i>")
-    kb_rows = []
-    dish = str(r.get("Блюдо"))
+
     if dish_photo(dish):
         kb_rows.append([InlineKeyboardButton(
             text=t("photo_view", lang), callback_data=f"ph:{kkey(dish)}")])
-    if tech_card(dish):
-        kb_rows.append([InlineKeyboardButton(
-            text=t("tech", lang), callback_data=f"tk:{kkey(dish)}:-")])
     if u.get("Роль") in (ROLE_PATRON, ROLE_MANAGER):
         kb_rows.append([InlineKeyboardButton(
             text=t("photo_add", lang), callback_data=f"pha:{kkey(dish)}")])
     kb_rows.append([InlineKeyboardButton(text=t("back", lang), callback_data=f"ms:{loc}:{gi}:{si}")])
     kb_rows.append([InlineKeyboardButton(text=t("home", lang), callback_data="home")])
-    await take_over(c, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=kb_rows))
+    await take_over(c, "\n".join(lines)[:4000], InlineKeyboardMarkup(inline_keyboard=kb_rows))
     await c.answer()
 
 
@@ -897,30 +923,46 @@ async def cb_tech(c: CallbackQuery):
         await c.answer(t("tech_none", lang), show_alert=True)
         return
     head = card[0]
-    lines = [f"📋 <b>{dish}</b>",
-             f"<i>№ {head.get('Карта №')} · {head.get('Дата')}</i>", ""]
+    num = str(head.get("Карта №") or "").strip()
+    if num.isdigit():
+        num = num.zfill(5)
+    lines = [f"<b>{dish}</b>", f"<i>📋 № {num} · {head.get('Дата')}</i>", ""]
     kb_rows = []
     for row in card:
         ing = str(row.get("Ингредиент") or "").strip()
         br, net = _f(row.get("Брутто")), _f(row.get("Нетто"))
         mark = " ▸" if has_card(ing) else ""
-        lines.append(f"{row.get('№')}. <b>{ing}</b>{mark}  ({row.get('Ед')})")
+        lines.append(f"{row.get('№')}. <b>{ing}</b>{mark}")
         if br is not None and net is not None:
-            lines.append(f"      {t('gross', lang)} {br:.3f} · {t('net', lang)} {net:.3f}")
+            lines.append(f"      {t('gross', lang)} {br:.3f} · {t('net', lang)} {net:.3f} {row.get('Ед')}")
         if has_card(ing):
             kb_rows.append([InlineKeyboardButton(
                 text=f"📋 {ing[:50]}", callback_data=f"tk:{kkey(ing)}:{parts[1]}")])
     total = _f(head.get("Итого вес, кг"))
     if total:
-        lines.append(f"\n<b>{t('yield_w', lang)}: {total:.3f} кг</b>")
-    if head.get("На выход"):
-        lines.append(f"<i>на {head.get('На выход')}</i>")
+        out_s = str(head.get("На выход") or "").strip()
+        lines.append(f"\n<b>{t('yield_w', lang)}: {total:.3f} кг</b>"
+                     + (f"  <i>({out_s})</i>" if out_s else ""))
+
+    # если полуфабрикат заведён и как позиция меню — покажем экономику
+    for mr in rows(MENU_WS):
+        if " ".join(str(mr.get("Блюдо", "")).split()).lower() == " ".join(dish.split()).lower():
+            price, cost, fc = _f(mr.get("Цена")), _f(mr.get("Себестоимость")), _f(mr.get("ФК%"))
+            lines.append("")
+            if price:
+                lines.append(f"{t('price', lang)}: <b>{price:.2f} €</b>")
+            if cost is not None:
+                lines.append(f"{t('cost', lang)}: {cost:.2f} €")
+            if fc:
+                lines.append(f"Food cost: {'🔴' if fc > FC_LIMIT else '🟢'} <b>{fc:.1f}%</b>")
+            if price and cost is not None:
+                lines.append(f"{t('margin', lang)}: {price - cost:.2f} €")
+            break
 
     if parent and parent != "-":
         kb_rows.append([InlineKeyboardButton(
             text=t("back", lang), callback_data=f"tk:{parent}:-")])
-    else:
-        kb_rows.append([InlineKeyboardButton(text=t("home", lang), callback_data="home")])
+    kb_rows.append([InlineKeyboardButton(text=t("home", lang), callback_data="home")])
     await take_over(c, "\n".join(lines)[:4000], InlineKeyboardMarkup(inline_keyboard=kb_rows))
     await c.answer()
 
