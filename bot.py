@@ -120,6 +120,11 @@ T = {
     "queue_empty": {"es": "Todo procesado.", "ru": "Всё обработано.", "en": "All processed."},
     "queue_hint":  {"es": "Pulsa para abrir y reenviar.", "ru": "Нажмите, чтобы открыть и переслать.", "en": "Tap to open and forward."},
     "archive":     {"es": "🗄 Archivo", "ru": "🗄 Архив", "en": "🗄 Archive"},
+    "arch_put":    {"es": "🗄 Al archivo", "ru": "🗄 Убрать в архив", "en": "🗄 Archive dish"},
+    "arch_done":   {"es": "Plato archivado.", "ru": "Блюдо убрано в архив.", "en": "Dish archived."},
+    "arch_back":   {"es": "Devuelto a la carta.", "ru": "Возвращено в меню.", "en": "Restored to menu."},
+    "arch_empty":  {"es": "El archivo está vacío.", "ru": "Архив пуст.", "en": "Archive is empty."},
+    "arch_hint":   {"es": "Pulsa para devolver a la carta.", "ru": "Нажмите, чтобы вернуть в меню.", "en": "Tap to restore."},
     "staff":       {"es": "👤 Personal", "ru": "👤 Персонал", "en": "👤 Staff"},
     "sent_btn":    {"es": "✅ Enviado a bilz", "ru": "✅ Отправлено в bilz", "en": "✅ Sent to bilz"},
     "sent_done":   {"es": "✅ Enviado", "ru": "✅ Отправлено", "en": "✅ Sent"},
@@ -164,6 +169,7 @@ DOCS_WS = "Docs"
 MENU_WS = "Menu"
 TECH_WS = "TechCards"
 PHOTOS_WS = "Photos"
+ARCHIVE_WS = "Archive"
 
 HEADERS = {
     USERS_WS:   ["ID", "Имя", "Роль", "Отделы", "Статус", "Язык"],
@@ -176,6 +182,7 @@ HEADERS = {
     TECH_WS:    ["Блюдо", "Карта №", "Дата", "№", "Ингредиент", "Ед",
                  "Брутто", "Нетто", "Итого вес, кг", "На выход"],
     PHOTOS_WS:  ["Блюдо", "FileID", "Кто добавил", "Дата"],
+    ARCHIVE_WS: ["Блюдо", "Кто убрал", "Дата"],
 }
 
 _cache = {}
@@ -357,15 +364,58 @@ def _f(v):
 
 
 def menu_rows(loc: str):
+    arch = archived()
     out = []
     for r in rows(MENU_WS):
         locs = str(r.get("Локаль", "")).replace(" ", "").lower()
         if locs and locs != "all" and loc not in locs.split(","):
             continue
-        if not str(r.get("Блюдо", "")).strip():
+        dish = str(r.get("Блюдо", "")).strip()
+        if not dish or _n(dish) in arch:
             continue
         out.append(r)
     return out
+
+
+def _n(s) -> str:
+    return " ".join(str(s).split()).strip().lower()
+
+
+def archived() -> set:
+    return {_n(r.get("Блюдо")) for r in rows(ARCHIVE_WS) if str(r.get("Блюдо", "")).strip()}
+
+
+def archive_add(dish: str, who: str):
+    ws(ARCHIVE_WS).append_row(
+        [dish, who, datetime.now().strftime("%d.%m.%Y %H:%M")], value_input_option="RAW")
+    drop_cache(ARCHIVE_WS)
+
+
+def archive_remove(dish: str):
+    w = ws(ARCHIVE_WS)
+    for i, r in enumerate(rows(ARCHIVE_WS, force=True), start=2):
+        if _n(r.get("Блюдо")) == _n(dish):
+            w.delete_rows(i)
+            drop_cache(ARCHIVE_WS)
+            return True
+    return False
+
+
+def archived_rows():
+    return [r for r in rows(ARCHIVE_WS) if str(r.get("Блюдо", "")).strip()]
+
+
+# ---- история переходов: «Назад» работает на любом экране ----
+_nav = {}
+
+
+def nav_push(uid: int, data: str):
+    st = _nav.setdefault(uid, [])
+    if st and st[-1] == data:
+        return
+    st.append(data)
+    if len(st) > 40:
+        del st[:-40]
 
 
 def menu_groups(loc: str):
@@ -728,6 +778,7 @@ async def cb_lang(c: CallbackQuery):
 
 @dp.callback_query(F.data == "home")
 async def cb_home(c: CallbackQuery):
+    _nav.pop(c.from_user.id, None)
     u = guard(c)
     if not u:
         await c.answer(t("no_access", DEFAULT_LANG), show_alert=True)
@@ -747,17 +798,23 @@ async def cb_dept(c: CallbackQuery):
     if dept not in DEPTS:
         await c.answer()
         return
+    nav_push(c.from_user.id, c.data)
+
+    if dept == "stock":
+        kb = [[InlineKeyboardButton(
+            text=f"{MENU_EMOJI} {dept_name('menu', lang)}", callback_data="menu")]]
+        if is_patron(u):
+            kb.insert(0, [InlineKeyboardButton(text=f"{t('queue', lang)} "
+                                                    f"({len(pending_docs())})", callback_data="q")])
+            kb.insert(0, [InlineKeyboardButton(text=t("today", lang), callback_data="today")])
+        kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
+        await take_over(c, f"{crumb(dept, lang)}", InlineKeyboardMarkup(inline_keyboard=kb))
+        await c.answer()
+        return
+
     kb = [[InlineKeyboardButton(text=f"{l['emoji']} {l['name']}", callback_data=f"l:{dept}:{code}")]
           for code, l in LOCALES.items()]
-    if dept == "stock":
-        kb.insert(0, [InlineKeyboardButton(
-            text=f"{MENU_EMOJI} {dept_name('menu', lang)}", callback_data="menu")])
-        if is_patron(u):
-            kb.insert(0, [InlineKeyboardButton(text=t("archive", lang), callback_data="arch")])
-            n = len(pending_docs())
-            kb.insert(0, [InlineKeyboardButton(text=f"{t('queue', lang)} ({n})", callback_data="q")])
-            kb.insert(0, [InlineKeyboardButton(text=t("today", lang), callback_data="today")])
-    kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="home")])
+    kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
     await take_over(c, f"{crumb(dept, lang)}\n\n{t('choose_locale', lang)}",
                     InlineKeyboardMarkup(inline_keyboard=kb))
     await c.answer()
@@ -770,9 +827,12 @@ async def cb_menu_root(c: CallbackQuery):
         await c.answer(t("no_access", DEFAULT_LANG), show_alert=True)
         return
     lang = ulang(u)
+    nav_push(c.from_user.id, "menu")
     kb = [[InlineKeyboardButton(text=f"{l['emoji']} {l['name']}", callback_data=f"l:menu:{code}")]
           for code, l in LOCALES.items()]
-    kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="d:stock")])
+    if is_patron(u):
+        kb.append([InlineKeyboardButton(text=t("archive", lang), callback_data="arch")])
+    kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
     await take_over(c, f"{crumb('menu', lang)}\n\n{t('choose_locale', lang)}",
                     InlineKeyboardMarkup(inline_keyboard=kb))
     await c.answer()
@@ -785,6 +845,7 @@ async def cb_loc(c: CallbackQuery):
         await c.answer(t("no_access", DEFAULT_LANG), show_alert=True)
         return
     lang = ulang(u)
+    nav_push(c.from_user.id, c.data)
     _, dept, loc = c.data.split(":")
     if (dept not in DEPTS and dept != "menu") or loc not in LOCALES:
         await c.answer()
@@ -794,7 +855,7 @@ async def cb_loc(c: CallbackQuery):
         groups = menu_groups(loc)
         if not groups:
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=t("back", lang), callback_data="menu")]])
+                [InlineKeyboardButton(text=t("back", lang), callback_data="bk")]])
             await take_over(c, f"{crumb(dept, lang, loc)}\n\n<i>{t('empty', lang)}</i>", kb)
             await c.answer()
             return
@@ -804,7 +865,7 @@ async def cb_loc(c: CallbackQuery):
         for i, g in enumerate(groups):
             n = len([r for r in menu_rows(loc) if str(r.get("Группа", "")).strip() == g])
             kb.append([InlineKeyboardButton(text=f"{g}  ·  {n}", callback_data=f"mg:{loc}:{i}")])
-        kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="menu")])
+        kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
         await take_over(c, f"{crumb(dept, lang, loc)}\n\n{t('choose_item', lang)}",
                         InlineKeyboardMarkup(inline_keyboard=kb))
         await c.answer()
@@ -814,13 +875,13 @@ async def cb_loc(c: CallbackQuery):
     if not items:
         text = f"{crumb(dept, lang, loc)}\n\n<i>{t('empty', lang)}</i>"
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=t("back", lang), callback_data=f"d:{dept}")]])
+            [InlineKeyboardButton(text=t("back", lang), callback_data="bk")]])
     else:
         text = f"{crumb(dept, lang, loc)}\n\n{t('choose_item', lang)}"
         kb = InlineKeyboardMarkup(inline_keyboard=[
             *[[InlineKeyboardButton(text=str(r["Раздел"])[:60], callback_data=f"s:{dept}:{loc}:{i}")]
               for i, r in enumerate(items)],
-            [InlineKeyboardButton(text=t("back", lang), callback_data=f"d:{dept}")]])
+            [InlineKeyboardButton(text=t("back", lang), callback_data="bk")]])
     await take_over(c, text, kb)
     await c.answer()
 
@@ -832,6 +893,7 @@ async def cb_section(c: CallbackQuery):
         await c.answer(t("no_access", DEFAULT_LANG), show_alert=True)
         return
     lang = ulang(u)
+    nav_push(c.from_user.id, c.data)
     _, dept, loc, idx = c.data.split(":")
     items = sections(dept, loc, lang)
     try:
@@ -842,7 +904,7 @@ async def cb_section(c: CallbackQuery):
     body = str(r.get("Текст") or "").strip() or "—"
     text = f"{crumb(dept, lang, loc)}\n\n<b>{r.get('Раздел')}</b>\n\n{body}"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t("back", lang), callback_data=f"l:{dept}:{loc}")],
+        [InlineKeyboardButton(text=t("back", lang), callback_data="bk")],
         [InlineKeyboardButton(text=t("home", lang), callback_data="home")]])
     await take_over(c, text[:4000], kb)
     await c.answer()
@@ -855,6 +917,7 @@ async def cb_menu_group(c: CallbackQuery):
         await c.answer(t("no_access", DEFAULT_LANG), show_alert=True)
         return
     lang = ulang(u)
+    nav_push(c.from_user.id, c.data)
     _, loc, gi = c.data.split(":")
     groups = menu_groups(loc)
     try:
@@ -869,7 +932,7 @@ async def cb_menu_group(c: CallbackQuery):
         label = s if s else "—"
         kb.append([InlineKeyboardButton(text=f"{label[:45]}  ·  {n}",
                                         callback_data=f"ms:{loc}:{gi}:{i}")])
-    kb.append([InlineKeyboardButton(text=t("back", lang), callback_data=f"l:menu:{loc}")])
+    kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
     head = f"{LOCALES[loc]['emoji']} {LOCALES[loc]['name']}\n🍽 <b>{g}</b>"
     await take_over(c, head, InlineKeyboardMarkup(inline_keyboard=kb))
     await c.answer()
@@ -882,6 +945,7 @@ async def cb_menu_sub(c: CallbackQuery):
         await c.answer(t("no_access", DEFAULT_LANG), show_alert=True)
         return
     lang = ulang(u)
+    nav_push(c.from_user.id, c.data)
     _, loc, gi, si = c.data.split(":")
     groups = menu_groups(loc)
     try:
@@ -900,7 +964,7 @@ async def cb_menu_sub(c: CallbackQuery):
         kb.append([InlineKeyboardButton(
             text=f"{str(r.get('Блюдо'))[:34]}  {p}{mark}",
             callback_data=f"md:{loc}:{gi}:{si}:{i}")])
-    kb.append([InlineKeyboardButton(text=t("back", lang), callback_data=f"mg:{loc}:{gi}")])
+    kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
     head = f"🍽 {g}\n<b>{s or '—'}</b>  ·  {len(dishes)} {t('dishes', lang)}"
     await take_over(c, head, InlineKeyboardMarkup(inline_keyboard=kb))
     await c.answer()
@@ -913,6 +977,7 @@ async def cb_menu_dish(c: CallbackQuery):
         await c.answer(t("no_access", DEFAULT_LANG), show_alert=True)
         return
     lang = ulang(u)
+    nav_push(c.from_user.id, c.data)
     _, loc, gi, si, di = c.data.split(":")
     try:
         g = menu_groups(loc)[int(gi)]
@@ -929,7 +994,10 @@ async def cb_menu_dish(c: CallbackQuery):
     if u.get("Роль") in (ROLE_PATRON, ROLE_MANAGER):
         kb_rows.append([InlineKeyboardButton(
             text=t("photo_add", lang), callback_data=f"pha:{kkey(dish)}")])
-    kb_rows.append([InlineKeyboardButton(text=t("back", lang), callback_data=f"ms:{loc}:{gi}:{si}")])
+    if is_patron(u):
+        kb_rows.append([InlineKeyboardButton(
+            text=t("arch_put", lang), callback_data=f"ar:{kkey(dish)}")])
+    kb_rows.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
     kb_rows.append([InlineKeyboardButton(text=t("home", lang), callback_data="home")])
     await take_over(c, "\n".join(lines)[:4000], InlineKeyboardMarkup(inline_keyboard=kb_rows),
                     photo=dish_photo(dish))
@@ -977,6 +1045,7 @@ async def cb_tech(c: CallbackQuery):
         await c.answer(t("no_access", DEFAULT_LANG), show_alert=True)
         return
     lang = ulang(u)
+    nav_push(c.from_user.id, c.data)
     parts = c.data.split(":")
     dish, parent = kname(parts[1]), parts[2]
     if not dish:
@@ -994,7 +1063,7 @@ async def cb_tech(c: CallbackQuery):
             text=t("photo_add", lang), callback_data=f"pha:{kkey(dish)}")])
     if parent and parent != "-":
         kb_rows.append([InlineKeyboardButton(
-            text=t("back", lang), callback_data=f"tk:{parent}:-")])
+            text=t("back", lang), callback_data="bk")])
     kb_rows.append([InlineKeyboardButton(text=t("home", lang), callback_data="home")])
     await take_over(c, "\n".join(lines)[:4000], InlineKeyboardMarkup(inline_keyboard=kb_rows),
                     photo=dish_photo(dish))
@@ -1008,6 +1077,7 @@ async def cb_foodcost(c: CallbackQuery):
         await c.answer(t("only_patron", ulang(u)), show_alert=True)
         return
     lang = ulang(u)
+    nav_push(c.from_user.id, c.data)
     loc = c.data.split(":")[1]
     worst, no_card, zero_price = fc_report(loc)
     if not worst:
@@ -1024,7 +1094,7 @@ async def cb_foodcost(c: CallbackQuery):
         text = "\n".join(lines)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=t("refresh", lang), callback_data=f"fc:{loc}")],
-        [InlineKeyboardButton(text=t("back", lang), callback_data=f"l:menu:{loc}")]])
+        [InlineKeyboardButton(text=t("back", lang), callback_data="bk")]])
     await take_over(c, text[:4000], kb)
     await c.answer()
 
@@ -1036,6 +1106,7 @@ async def cb_today(c: CallbackQuery):
         await c.answer(t("only_patron", ulang(u)), show_alert=True)
         return
     lang = ulang(u)
+    nav_push(c.from_user.id, c.data)
     stats = today_stats()
     today = datetime.now().strftime("%d.%m.%Y")
     lines = [f"📊 <b>{t('today_title', lang)}</b> · {today}\n"]
@@ -1052,7 +1123,7 @@ async def cb_today(c: CallbackQuery):
         lines.append(f"\n<i>{t('nothing_today', lang)}</i>")
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=t("refresh", lang), callback_data="today")],
-        [InlineKeyboardButton(text=t("back", lang), callback_data="d:stock")]])
+        [InlineKeyboardButton(text=t("back", lang), callback_data="bk")]])
     await take_over(c, "\n".join(lines)[:4000], kb)
     await c.answer()
 
@@ -1064,11 +1135,12 @@ async def cb_queue(c: CallbackQuery):
         await c.answer(t("only_patron", ulang(u)), show_alert=True)
         return
     lang = ulang(u)
+    nav_push(c.from_user.id, c.data)
     items = pending_docs()
     if not items:
         text = f"<b>{t('queue', lang)}</b>\n\n{t('queue_empty', lang)}"
         kb = [[InlineKeyboardButton(text=t("refresh", lang), callback_data="q")],
-              [InlineKeyboardButton(text=t("back", lang), callback_data="d:stock")]]
+              [InlineKeyboardButton(text=t("back", lang), callback_data="bk")]]
     else:
         text = (f"<b>{t('queue', lang)}</b> — {len(items)}\n\n"
                 f"<i>{t('queue_hint', lang)}</i>")
@@ -1082,7 +1154,7 @@ async def cb_queue(c: CallbackQuery):
                      f"{r.get('Дата')} {r.get('Время')}")
             kb.append([InlineKeyboardButton(text=label[:60], callback_data=f"qd:{idx}")])
         kb.append([InlineKeyboardButton(text=t("refresh", lang), callback_data="q")])
-        kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="d:stock")])
+        kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
     await take_over(c, text[:4000], InlineKeyboardMarkup(inline_keyboard=kb))
     await c.answer()
 
@@ -1094,6 +1166,7 @@ async def cb_queue_doc(c: CallbackQuery):
         await c.answer(t("only_patron", ulang(u)), show_alert=True)
         return
     lang = ulang(u)
+    nav_push(c.from_user.id, c.data)
     idx = int(c.data.split(":")[1])
     data = rows(DOCS_WS, force=True)
     try:
@@ -1115,8 +1188,7 @@ async def cb_queue_doc(c: CallbackQuery):
     kb = []
     if not done:
         kb.append([InlineKeyboardButton(text=t("sent_btn", lang), callback_data=f"sent:{idx}")])
-    kb.append([InlineKeyboardButton(text=t("back", lang),
-                                    callback_data="q" if not done else "arch")])
+    kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
     fid = str(r.get("FileID") or "").strip() or None
     await take_over(c, cap, InlineKeyboardMarkup(inline_keyboard=kb), photo=fid)
     await c.answer()
@@ -1124,31 +1196,54 @@ async def cb_queue_doc(c: CallbackQuery):
 
 @dp.callback_query(F.data == "arch")
 async def cb_archive(c: CallbackQuery):
-    u = get_user(c.from_user.id)
+    u = guard(c)
     if not is_patron(u):
         await c.answer(t("only_patron", ulang(u)), show_alert=True)
         return
     lang = ulang(u)
-    done = [(i, r) for i, r in enumerate(rows(DOCS_WS, force=True), start=2)
-            if str(r.get("Статус")).strip() and str(r.get("Статус")).strip() != "новый"]
-    done.reverse()
-    if not done:
-        text = f"<b>{t('archive', lang)}</b>\n\n—"
+    nav_push(c.from_user.id, "arch")
+    items = archived_rows()
+    if not items:
+        text = f"<b>{t('archive', lang)}</b>\n\n<i>{t('arch_empty', lang)}</i>"
         kb = []
     else:
-        text = f"<b>{t('archive', lang)}</b> — {len(done)}"
-        kb = []
-        for idx, r in done[:40]:
-            loc = str(r.get("Локаль")).strip()
-            typ = str(r.get("Тип")).strip()
-            L = LOCALES.get(loc, {})
-            label = (f"{DOCTYPES.get(typ, {}).get('emoji', '📄')} "
-                     f"{L.get('emoji', '')} {L.get('name', loc)} · "
-                     f"{r.get('Дата')} {r.get('Время')}")
-            kb.append([InlineKeyboardButton(text=label[:60], callback_data=f"qd:{idx}")])
-    kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="d:stock")])
+        text = f"<b>{t('archive', lang)}</b> — {len(items)}\n\n<i>{t('arch_hint', lang)}</i>"
+        kb = [[InlineKeyboardButton(text=f"↩️ {str(r.get('Блюдо'))[:50]}",
+                                    callback_data=f"unar:{kkey(str(r.get('Блюдо')))}")]
+              for r in items[:40]]
+    kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
     await take_over(c, text[:4000], InlineKeyboardMarkup(inline_keyboard=kb))
     await c.answer()
+
+
+@dp.callback_query(F.data.startswith("ar:"))
+async def cb_archive_add(c: CallbackQuery):
+    u = guard(c)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    lang = ulang(u)
+    dish = kname(c.data.split(":")[1])
+    if not dish:
+        await c.answer("Откройте блюдо заново", show_alert=True)
+        return
+    archive_add(dish, u.get("Имя") or "—")
+    await c.answer(t("arch_done", lang), show_alert=True)
+    await nav_back(c)
+
+
+@dp.callback_query(F.data.startswith("unar:"))
+async def cb_archive_restore(c: CallbackQuery):
+    u = guard(c)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    lang = ulang(u)
+    dish = kname(c.data.split(":")[1])
+    if dish:
+        archive_remove(dish)
+        await c.answer(t("arch_back", lang))
+    await cb_archive(c)
 
 
 @dp.callback_query(F.data.startswith("sent:"))
@@ -1166,6 +1261,52 @@ async def cb_sent(c: CallbackQuery):
 
 @dp.callback_query(F.data == "noop")
 async def cb_noop(c: CallbackQuery):
+    await c.answer()
+
+
+# ---- маршрутизатор: «Назад» возвращает на предыдущий экран ----
+
+ROUTES = [
+    ("home",  lambda cc: cb_home(cc)),
+    ("menu",  lambda cc: cb_menu_root(cc)),
+    ("arch",  lambda cc: cb_archive(cc)),
+    ("today", lambda cc: cb_today(cc)),
+    ("q",     lambda cc: cb_queue(cc)),
+    ("d:",    lambda cc: cb_dept(cc)),
+    ("l:",    lambda cc: cb_loc(cc)),
+    ("mg:",   lambda cc: cb_menu_group(cc)),
+    ("ms:",   lambda cc: cb_menu_sub(cc)),
+    ("md:",   lambda cc: cb_menu_dish(cc)),
+    ("tk:",   lambda cc: cb_tech(cc)),
+    ("s:",    lambda cc: cb_section(cc)),
+    ("qd:",   lambda cc: cb_queue_doc(cc)),
+    ("fc:",   lambda cc: cb_foodcost(cc)),
+]
+
+
+async def route(c: CallbackQuery, data: str):
+    cc = c.model_copy(update={"data": data})
+    for prefix, fn in ROUTES:
+        if data == prefix or (prefix.endswith(":") and data.startswith(prefix)):
+            await fn(cc)
+            return
+    await cb_home(cc)
+
+
+async def nav_back(c: CallbackQuery):
+    st = _nav.get(c.from_user.id, [])
+    if st:
+        st.pop()
+    target = st[-1] if st else "home"
+    await route(c, target)
+
+
+@dp.callback_query(F.data == "bk")
+async def cb_back(c: CallbackQuery):
+    if not guard(c):
+        await c.answer(t("no_access", DEFAULT_LANG), show_alert=True)
+        return
+    await nav_back(c)
     await c.answer()
 
 
@@ -1200,7 +1341,7 @@ async def cb_staff(c: CallbackQuery):
     for r in rows(USERS_WS, force=True):
         lines.append(f"• {r.get('Имя')} — {role_name(r.get('Роль'), lang)} · {r.get('Статус')}")
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t("back", lang), callback_data="home")]])
+        [InlineKeyboardButton(text=t("back", lang), callback_data="bk")]])
     await take_over(c, "\n".join(lines)[:4000], kb)
     await c.answer()
 
