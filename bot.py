@@ -88,6 +88,10 @@ T = {
     "yield_w":    {"es": "Peso final",  "ru": "Выход",   "en": "Yield"},
     "gross":      {"es": "Bruto",       "ru": "Брутто",  "en": "Gross"},
     "net":        {"es": "Neto",        "ru": "Нетто",   "en": "Net"},
+    "photo_view": {"es": "📷 Foto", "ru": "📷 Фото", "en": "📷 Photo"},
+    "photo_add":  {"es": "➕ Añadir foto", "ru": "➕ Добавить фото", "en": "➕ Add photo"},
+    "photo_wait": {"es": "Envía la foto del plato:", "ru": "Пришлите фото блюда:", "en": "Send the dish photo:"},
+    "photo_saved":{"es": "Foto guardada.", "ru": "Фото сохранено.", "en": "Photo saved."},
     "dept_mkt":   {"es": "Marketing",          "ru": "Маркетинг",            "en": "Marketing"},
     "dept_hr":    {"es": "RRHH",               "ru": "HR",                   "en": "HR"},
     "dept_it":    {"es": "Soporte IT",         "ru": "IT-суппорт программ",  "en": "IT support"},
@@ -158,6 +162,7 @@ GROUPS_WS = "Groups"
 DOCS_WS = "Docs"
 MENU_WS = "Menu"
 TECH_WS = "TechCards"
+PHOTOS_WS = "Photos"
 
 HEADERS = {
     USERS_WS:   ["ID", "Имя", "Роль", "Отделы", "Статус", "Язык"],
@@ -169,6 +174,7 @@ HEADERS = {
                  "Цена", "Себестоимость", "ФК%"],
     TECH_WS:    ["Блюдо", "Карта №", "Дата", "№", "Ингредиент", "Ед",
                  "Брутто", "Нетто", "Итого вес, кг", "На выход"],
+    PHOTOS_WS:  ["Блюдо", "FileID", "Кто добавил", "Дата"],
 }
 
 _cache = {}
@@ -400,6 +406,50 @@ def tech_card(dish: str):
         except (TypeError, ValueError):
             return 0
     return sorted(out, key=k)
+
+
+# --- реестр коротких ключей: callback_data ограничен 64 байтами ---
+_keys, _rev = {}, {}
+
+
+def kkey(name: str) -> str:
+    n = " ".join(str(name).split())
+    if n in _rev:
+        return _rev[n]
+    k = f"k{len(_keys) + 1}"
+    _keys[k], _rev[n] = n, k
+    return k
+
+
+def kname(k: str):
+    return _keys.get(k)
+
+
+def has_card(name: str) -> bool:
+    return bool(tech_card(name))
+
+
+# --- фото блюд ---
+
+def dish_photo(dish: str):
+    key = " ".join(str(dish).split()).lower()
+    for r in reversed(rows(PHOTOS_WS)):
+        if " ".join(str(r.get("Блюдо", "")).split()).lower() == key:
+            fid = str(r.get("FileID") or "").strip()
+            if fid:
+                return fid
+    return None
+
+
+def save_photo(dish: str, file_id: str, who: str):
+    ws(PHOTOS_WS).append_row(
+        [dish, file_id, who, datetime.now().strftime("%d.%m.%Y %H:%M")],
+        value_input_option="RAW")
+    drop_cache(PHOTOS_WS)
+
+
+# кто сейчас загружает фото: uid -> название блюда
+_awaiting_photo = {}
 
 
 def fc_report(loc: str):
@@ -768,31 +818,80 @@ async def cb_menu_dish(c: CallbackQuery):
     if r.get("Ед"):
         lines.append(f"\n<i>{r.get('Ед')}</i>")
     kb_rows = []
-    if tech_card(str(r.get("Блюдо"))):
+    dish = str(r.get("Блюдо"))
+    if dish_photo(dish):
         kb_rows.append([InlineKeyboardButton(
-            text=t("tech", lang), callback_data=f"tc:{loc}:{gi}:{si}:{di}")])
+            text=t("photo_view", lang), callback_data=f"ph:{kkey(dish)}")])
+    if tech_card(dish):
+        kb_rows.append([InlineKeyboardButton(
+            text=t("tech", lang), callback_data=f"tk:{kkey(dish)}:-")])
+    if u.get("Роль") in (ROLE_PATRON, ROLE_MANAGER):
+        kb_rows.append([InlineKeyboardButton(
+            text=t("photo_add", lang), callback_data=f"pha:{kkey(dish)}")])
     kb_rows.append([InlineKeyboardButton(text=t("back", lang), callback_data=f"ms:{loc}:{gi}:{si}")])
     kb_rows.append([InlineKeyboardButton(text=t("home", lang), callback_data="home")])
     await take_over(c, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=kb_rows))
     await c.answer()
 
 
-@dp.callback_query(F.data.startswith("tc:"))
+@dp.callback_query(F.data.startswith("ph:"))
+async def cb_photo_view(c: CallbackQuery):
+    u = guard(c)
+    if not u:
+        await c.answer(t("no_access", DEFAULT_LANG), show_alert=True)
+        return
+    dish = kname(c.data.split(":")[1])
+    fid = dish_photo(dish) if dish else None
+    if not fid:
+        await c.answer("—", show_alert=True)
+        return
+    try:
+        await bot.send_photo(c.from_user.id, fid, caption=f"<b>{dish}</b>")
+    except Exception as e:
+        log.warning("photo send failed: %s", e)
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("pha:"))
+async def cb_photo_add(c: CallbackQuery):
+    u = guard(c)
+    if not u or u.get("Роль") not in (ROLE_PATRON, ROLE_MANAGER):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    lang = ulang(u)
+    dish = kname(c.data.split(":")[1])
+    if not dish:
+        await c.answer("Откройте блюдо заново", show_alert=True)
+        return
+    _awaiting_photo[c.from_user.id] = dish
+    await bot.send_message(c.from_user.id,
+                           f"{t('photo_wait', lang)}\n<b>{dish}</b>")
+    await c.answer()
+
+
+@dp.message(F.photo, F.chat.type == "private")
+async def on_private_photo(m: Message):
+    dish = _awaiting_photo.pop(m.from_user.id, None)
+    if not dish:
+        return
+    u = get_user(m.from_user.id)
+    lang = ulang(u)
+    save_photo(dish, m.photo[-1].file_id, m.from_user.full_name)
+    await m.answer(f"{t('photo_saved', lang)}\n<b>{dish}</b>")
+
+
+@dp.callback_query(F.data.startswith("tk:"))
 async def cb_tech(c: CallbackQuery):
     u = guard(c)
     if not u:
         await c.answer(t("no_access", DEFAULT_LANG), show_alert=True)
         return
     lang = ulang(u)
-    _, loc, gi, si, di = c.data.split(":")
-    try:
-        g = menu_groups(loc)[int(gi)]
-        s = menu_subs(loc, g)[int(si)]
-        r = menu_dishes(loc, g, s)[int(di)]
-    except (ValueError, IndexError):
-        await c.answer()
+    parts = c.data.split(":")
+    dish, parent = kname(parts[1]), parts[2]
+    if not dish:
+        await c.answer("Откройте заново", show_alert=True)
         return
-    dish = str(r.get("Блюдо"))
     card = tech_card(dish)
     if not card:
         await c.answer(t("tech_none", lang), show_alert=True)
@@ -800,19 +899,29 @@ async def cb_tech(c: CallbackQuery):
     head = card[0]
     lines = [f"📋 <b>{dish}</b>",
              f"<i>№ {head.get('Карта №')} · {head.get('Дата')}</i>", ""]
+    kb_rows = []
     for row in card:
+        ing = str(row.get("Ингредиент") or "").strip()
         br, net = _f(row.get("Брутто")), _f(row.get("Нетто"))
-        lines.append(f"{row.get('№')}. <b>{row.get('Ингредиент')}</b>  ({row.get('Ед')})")
-        lines.append(f"      {t('gross', lang)} {br:.3f}  ·  {t('net', lang)} {net:.3f}"
-                     if br is not None and net is not None else "      —")
+        mark = " ▸" if has_card(ing) else ""
+        lines.append(f"{row.get('№')}. <b>{ing}</b>{mark}  ({row.get('Ед')})")
+        if br is not None and net is not None:
+            lines.append(f"      {t('gross', lang)} {br:.3f} · {t('net', lang)} {net:.3f}")
+        if has_card(ing):
+            kb_rows.append([InlineKeyboardButton(
+                text=f"📋 {ing[:50]}", callback_data=f"tk:{kkey(ing)}:{parts[1]}")])
     total = _f(head.get("Итого вес, кг"))
     if total:
         lines.append(f"\n<b>{t('yield_w', lang)}: {total:.3f} кг</b>")
     if head.get("На выход"):
         lines.append(f"<i>на {head.get('На выход')}</i>")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t("back", lang), callback_data=f"md:{loc}:{gi}:{si}:{di}")]])
-    await take_over(c, "\n".join(lines)[:4000], kb)
+
+    if parent and parent != "-":
+        kb_rows.append([InlineKeyboardButton(
+            text=t("back", lang), callback_data=f"tk:{parent}:-")])
+    else:
+        kb_rows.append([InlineKeyboardButton(text=t("home", lang), callback_data="home")])
+    await take_over(c, "\n".join(lines)[:4000], InlineKeyboardMarkup(inline_keyboard=kb_rows))
     await c.answer()
 
 
@@ -1036,6 +1145,35 @@ async def start(m: Message):
         return
 
     await m.answer(home_text(u), reply_markup=kb_home(u))
+
+
+@dp.message(Command("diag"))
+async def cmd_diag(m: Message):
+    if not is_patron(get_user(m.from_user.id)):
+        return
+    lines = ["<b>Диагностика</b>\n", "<b>Вкладки в таблице:</b>"]
+    try:
+        for w in _sh.worksheets():
+            lines.append(f"• {w.title}")
+    except Exception as e:
+        lines.append(f"ошибка: {e}")
+    lines.append("")
+    for nm in (MENU_WS, TECH_WS, DOCS_WS, GROUPS_WS, PHOTOS_WS):
+        try:
+            w = ws(nm)
+            lines.append(f"<b>{nm}</b> → читаю «{w.title}», строк: {len(rows(nm, force=True))}")
+        except Exception as e:
+            lines.append(f"<b>{nm}</b> → ошибка: {e}")
+    try:
+        sample = [r for r in rows(MENU_WS) if "Cruasán Clasico" in str(r.get("Блюдо", ""))]
+        if sample:
+            r = sample[0]
+            lines.append(f"\n<b>Проверка числа</b>\n{r.get('Блюдо')}\n"
+                         f"Цена: {r.get('Цена')}  (должно 2,9)\n"
+                         f"ФК%: {r.get('ФК%')}  (должно 56,6)")
+    except Exception as e:
+        lines.append(f"проверка числа: {e}")
+    await m.answer("\n".join(lines)[:4000])
 
 
 @dp.message(Command("id"))
