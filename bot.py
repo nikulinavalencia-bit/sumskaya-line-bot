@@ -18,7 +18,7 @@ from google.oauth2.service_account import Credentials
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message, CallbackQuery, ChatMemberUpdated, InputMediaPhoto,
-    InlineKeyboardMarkup, InlineKeyboardButton, ErrorEvent,
+    InlineKeyboardMarkup, InlineKeyboardButton, ErrorEvent, BotCommand,
 )
 from aiogram.filters import CommandStart, Command
 from aiogram.client.default import DefaultBotProperties
@@ -33,10 +33,8 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 SHEET_ID = os.environ["SHEET_ID"]
 GOOGLE_CREDS = json.loads(os.environ["GOOGLE_CREDS"])
 
-# Почта — пересылка фактур в Билз. Если не заданы, письма просто не шлются
-# (документ всё равно сохранится в очередь, будет видно в логах предупреждение).
-# Почта — пересылка фактур в Билз, через Brevo (HTTP API, т.к. Railway
-# блокирует прямые SMTP-подключения — Errno 101 Network unreachable).
+# Почта — пересылка фактур и списаний в Билз, через Brevo (HTTP API, т.к.
+# Railway блокирует прямые SMTP-подключения — Errno 101 Network unreachable).
 BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
 BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "")
 SMTP_USER = os.environ.get("SMTP_USER", "")          # адрес-отправитель (должен быть подтверждён в Brevo)
@@ -129,6 +127,7 @@ T = {
 
     "queue":       {"es": "📥 Cola de documentos", "ru": "📥 Очередь документов", "en": "📥 Document queue"},
     "invoices":    {"es": "Facturas", "ru": "Фактуры", "en": "Invoices"},
+    "writeoffs":   {"es": "Bajas", "ru": "Списания", "en": "Write-offs"},
     "queue_empty": {"es": "Todo procesado.", "ru": "Всё обработано.", "en": "All processed."},
     "queue_hint":  {"es": "Pulsa para abrir y reenviar.", "ru": "Нажмите, чтобы открыть и переслать.", "en": "Tap to open and forward."},
     "archive":     {"es": "🗄 Archivo", "ru": "🗄 Архив", "en": "🗄 Archive"},
@@ -188,7 +187,7 @@ HEADERS = {
     CONTENT_WS: ["Отдел", "Локаль", "Порядок", "Раздел", "Текст", "Язык"],
     GROUPS_WS:  ["ChatID", "Название группы", "Локаль", "Тип"],
     DOCS_WS:    ["Дата", "Время", "Локаль", "Тип", "Автор",
-                 "ChatID", "MessageID", "FileID", "Текст", "Статус"],
+                 "ChatID", "MessageID", "FileID", "Текст", "Статус", "Письмо"],
     MENU_WS:    ["Локаль", "Группа", "Подгруппа", "Блюдо", "Ед",
                  "Цена", "Себестоимость", "ФК%"],
     TECH_WS:    ["Блюдо", "Карта №", "Дата", "№", "Ингредиент", "Ед",
@@ -344,6 +343,12 @@ def set_doc_status(row_idx: int, status: str):
     drop_cache(DOCS_WS)
 
 
+def set_doc_email(row_idx: int, mark: str):
+    """Отметка в колонке «Письмо» — ✅ ушло в Билз / ⚠️ не ушло."""
+    ws(DOCS_WS).update_cell(row_idx, 11, mark)
+    drop_cache(DOCS_WS)
+
+
 # ---------------- ПОЧТА (пересылка фактур в Билз, через Brevo API) ----------------
 
 def _send_email_sync(subject: str, body: str, to_addr: str,
@@ -388,15 +393,19 @@ async def send_email_async(subject, body, to_addr, attachment=None, filename=Non
     return await asyncio.to_thread(_send_email_sync, subject, body, to_addr, attachment, filename)
 
 
+EMAIL_SUBJECT_PREFIX = {"factura": "Фактура", "baja": "Списание"}
+
+
 async def forward_doc_to_billz(loc: str, typ: str, file_id: str, text: str) -> bool:
-    """Пересылает фактуру (фото/файл из группы) на почту Билза."""
-    if typ != "factura":
+    """Пересылает фактуру или списание (фото/файл из группы) на почту Билза."""
+    if typ not in EMAIL_SUBJECT_PREFIX:
         return False
 
+    prefix = EMAIL_SUBJECT_PREFIX[typ]
     loc_name = LOCALES.get(loc, {}).get("name", loc)
     now = datetime.now()
-    subject = f"Фактура — {loc_name} — {now.strftime('%d.%m.%Y')}"
-    body = text or f"Фактура от {loc_name}, {now.strftime('%d.%m.%Y %H:%M')}"
+    subject = f"{prefix} — {loc_name} — {now.strftime('%d.%m.%Y')}"
+    body = text or f"{prefix} от {loc_name}, {now.strftime('%d.%m.%Y %H:%M')}"
 
     attachment, filename = None, None
     if file_id:
@@ -404,13 +413,13 @@ async def forward_doc_to_billz(loc: str, typ: str, file_id: str, text: str) -> b
             tg_file = await bot.get_file(file_id)
             buf = await bot.download_file(tg_file.file_path)
             attachment = buf.read()
-            filename = tg_file.file_path.rsplit("/", 1)[-1] or "factura.jpg"
+            filename = tg_file.file_path.rsplit("/", 1)[-1] or "doc.jpg"
         except Exception as e:
             log.error("Не удалось скачать файл из Telegram для пересылки: %s", e)
 
     ok = await send_email_async(subject, body, BILLZ_EMAIL, attachment, filename)
     if not ok:
-        log.warning("Фактура %s (%s) НЕ отправлена в Билз", loc_name, now.strftime("%d.%m.%Y %H:%M"))
+        log.warning("%s %s (%s) НЕ отправлен(а) в Билз", prefix, loc_name, now.strftime("%d.%m.%Y %H:%M"))
     return ok
 
 
@@ -841,19 +850,11 @@ async def group_intake(m: Message):
         return
 
     author = m.from_user.full_name if m.from_user else "—"
-    save_doc(loc, typ, author, m.chat.id, m.message_id, file_id, text)
+    row_idx = save_doc(loc, typ, author, m.chat.id, m.message_id, file_id, text)
 
-    if typ == "factura":
+    if typ in EMAIL_SUBJECT_PREFIX:  # factura, baja — пересылаем в Билз
         ok = await forward_doc_to_billz(loc, typ, file_id, text)
-        loc_name = LOCALES.get(loc, {}).get("name", loc)
-        # Статус — только патронам в личку, в группу ничего не пишем
-        status_text = (f"✅ Фактура {loc_name} отправлена в Билз" if ok
-                       else f"⚠️ Фактура {loc_name} НЕ отправлена в Билз (сохранена в очереди бота)")
-        for pid in patrons():
-            try:
-                await bot.send_message(pid, status_text)
-            except Exception:
-                pass
+        set_doc_email(row_idx, "✅" if ok else "⚠️")
 
 
 # ---------------- КОЛБЭКИ ----------------
@@ -907,6 +908,9 @@ async def cb_dept(c: CallbackQuery):
         kb = [[InlineKeyboardButton(
             text=f"{MENU_EMOJI} {dept_name('menu', lang)}", callback_data="menu")]]
         if is_patron(u):
+            kb.insert(0, [InlineKeyboardButton(
+                text=f"{DOCTYPES['baja']['emoji']} {t('writeoffs', lang)} "
+                     f"({len(pending_docs_by(typ='baja'))})", callback_data="wo")])
             kb.insert(0, [InlineKeyboardButton(
                 text=f"{DOCTYPES['factura']['emoji']} {t('invoices', lang)} "
                      f"({len(pending_docs_by(typ='factura'))})", callback_data="inv")])
@@ -1263,38 +1267,43 @@ async def cb_queue(c: CallbackQuery):
     await c.answer()
 
 
-@dp.callback_query(F.data == "inv")
-async def cb_invoices(c: CallbackQuery):
+DOC_MENUS = {
+    "factura": {"prefix": "inv", "title_key": "invoices"},
+    "baja":    {"prefix": "wo",  "title_key": "writeoffs"},
+}
+
+
+async def show_doc_locale_menu(c: CallbackQuery, typ: str):
     u = guard(c)
     if not is_patron(u):
         await c.answer(t("only_patron", ulang(u)), show_alert=True)
         return
     lang = ulang(u)
     nav_push(c.from_user.id, c.data)
+    cfg = DOC_MENUS[typ]
     kb = []
     for code, L in LOCALES.items():
-        n = len(pending_docs_by(loc=code, typ="factura"))
+        n = len(pending_docs_by(loc=code, typ=typ))
         kb.append([InlineKeyboardButton(
-            text=f"{L['emoji']} {L['name']} ({n})", callback_data=f"inv:{code}")])
+            text=f"{L['emoji']} {L['name']} ({n})", callback_data=f"{cfg['prefix']}:{code}")])
     kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
-    title = f"{DOCTYPES['factura']['emoji']} <b>{t('invoices', lang)}</b>"
+    title = f"{DOCTYPES[typ]['emoji']} <b>{t(cfg['title_key'], lang)}</b>"
     await take_over(c, f"{title}\n\n{t('choose_locale', lang)}",
                     InlineKeyboardMarkup(inline_keyboard=kb))
     await c.answer()
 
 
-@dp.callback_query(F.data.startswith("inv:"))
-async def cb_invoices_loc(c: CallbackQuery):
+async def show_doc_locale_list(c: CallbackQuery, typ: str, loc: str):
     u = guard(c)
     if not is_patron(u):
         await c.answer(t("only_patron", ulang(u)), show_alert=True)
         return
     lang = ulang(u)
     nav_push(c.from_user.id, c.data)
-    loc = c.data.split(":")[1]
+    cfg = DOC_MENUS[typ]
     L = LOCALES.get(loc, {})
-    items = pending_docs_by(loc=loc, typ="factura")
-    title = (f"{DOCTYPES['factura']['emoji']} <b>{t('invoices', lang)}</b> · "
+    items = pending_docs_by(loc=loc, typ=typ)
+    title = (f"{DOCTYPES[typ]['emoji']} <b>{t(cfg['title_key'], lang)}</b> · "
              f"{L.get('emoji', '')} {L.get('name', loc)}")
     if not items:
         text = f"{title}\n\n{t('queue_empty', lang)}"
@@ -1304,12 +1313,33 @@ async def cb_invoices_loc(c: CallbackQuery):
         text = f"{title} — {len(items)}\n\n<i>{t('queue_hint', lang)}</i>"
         kb = []
         for idx, r in items[:40]:
-            label = f"{r.get('Дата')} {r.get('Время')} · {r.get('Автор')}"
+            mark = str(r.get("Письмо") or "").strip()
+            label = f"{(mark + ' ') if mark else ''}{r.get('Дата')} {r.get('Время')} · {r.get('Автор')}"
             kb.append([InlineKeyboardButton(text=label[:60], callback_data=f"qd:{idx}")])
         kb.append([InlineKeyboardButton(text=t("refresh", lang), callback_data=c.data)])
         kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
     await take_over(c, text[:4000], InlineKeyboardMarkup(inline_keyboard=kb))
     await c.answer()
+
+
+@dp.callback_query(F.data == "inv")
+async def cb_invoices(c: CallbackQuery):
+    await show_doc_locale_menu(c, "factura")
+
+
+@dp.callback_query(F.data.startswith("inv:"))
+async def cb_invoices_loc(c: CallbackQuery):
+    await show_doc_locale_list(c, "factura", c.data.split(":")[1])
+
+
+@dp.callback_query(F.data == "wo")
+async def cb_writeoffs(c: CallbackQuery):
+    await show_doc_locale_menu(c, "baja")
+
+
+@dp.callback_query(F.data.startswith("wo:"))
+async def cb_writeoffs_loc(c: CallbackQuery):
+    await show_doc_locale_list(c, "baja", c.data.split(":")[1])
 
 
 @dp.callback_query(F.data.startswith("qd:"))
@@ -1330,21 +1360,38 @@ async def cb_queue_doc(c: CallbackQuery):
     loc = str(r.get("Локаль")).strip()
     typ = str(r.get("Тип")).strip()
     L = LOCALES.get(loc, {})
-    done = str(r.get("Статус")).strip() != "новый"
+    status = str(r.get("Статус")).strip()
+    done = status != "новый"
+    mark = str(r.get("Письмо") or "").strip()
     cap = (f"{DOCTYPES.get(typ, {}).get('emoji', '📄')} "
            f"<b>{doc_name(typ, lang) if typ in DOCTYPES else typ}</b>"
            f" · {L.get('emoji', '')} {L.get('name', loc)}\n"
            f"{t('from', lang)}: {r.get('Автор')}\n{r.get('Дата')} {r.get('Время')}")
+    if mark:
+        cap += f"\n{mark} {'отправлено в Билз' if mark == '✅' else 'не отправлено в Билз'}"
     txt = str(r.get("Текст") or "").strip()
     if txt:
         cap += f"\n\n{txt[:600]}"
     kb = []
     if not done:
         kb.append([InlineKeyboardButton(text=t("sent_btn", lang), callback_data=f"sent:{idx}")])
+    kb.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"del:{idx}")])
     kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
     fid = str(r.get("FileID") or "").strip() or None
     await take_over(c, cap, InlineKeyboardMarkup(inline_keyboard=kb), photo=fid)
     await c.answer()
+
+
+@dp.callback_query(F.data.startswith("del:"))
+async def cb_delete_doc(c: CallbackQuery):
+    u = get_user(c.from_user.id)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    idx = int(c.data.split(":")[1])
+    set_doc_status(idx, "удалено")
+    await c.answer("Удалено")
+    await nav_back(c)
 
 
 @dp.callback_query(F.data == "arch")
@@ -1426,6 +1473,8 @@ ROUTES = [
     ("q",     lambda cc: cb_queue(cc)),
     ("inv:",  lambda cc: cb_invoices_loc(cc)),
     ("inv",   lambda cc: cb_invoices(cc)),
+    ("wo:",   lambda cc: cb_writeoffs_loc(cc)),
+    ("wo",    lambda cc: cb_writeoffs(cc)),
     ("d:",    lambda cc: cb_dept(cc)),
     ("l:",    lambda cc: cb_loc(cc)),
     ("mg:",   lambda cc: cb_menu_group(cc)),
@@ -1590,6 +1639,9 @@ async def error_handler(event: ErrorEvent):
 async def main():
     ensure_headers()
     await bot.delete_webhook(drop_pending_updates=True)
+    await bot.set_my_commands([
+        BotCommand(command="start", description="🔄 Обновить / открыть меню"),
+    ])
 
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
     for pid in patrons():
