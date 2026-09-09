@@ -36,7 +36,7 @@ GOOGLE_CREDS = json.loads(os.environ["GOOGLE_CREDS"])
 # Почта — пересылка фактур в Билз. Если не заданы, письма просто не шлются
 # (документ всё равно сохранится в очередь, будет видно в логах предупреждение).
 SMTP_HOST = "smtp.gmail.com"
-SMTP_PORT = 465
+SMTP_PORT = 587
 SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASS = os.environ.get("SMTP_PASS", "")
 BILLZ_EMAIL = os.environ.get("BILLZ_EMAIL", "sa@bilz.ai")
@@ -367,7 +367,8 @@ def _send_email_sync(subject: str, body: str, to_addr: str,
         msg.add_attachment(attachment, maintype=maintype, subtype=subtype,
                             filename=filename or "factura")
     try:
-        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20) as s:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as s:
+            s.starttls()
             s.login(SMTP_USER, SMTP_PASS)
             s.send_message(msg)
         return True
