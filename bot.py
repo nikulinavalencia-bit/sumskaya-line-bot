@@ -18,7 +18,7 @@ from google.oauth2.service_account import Credentials
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message, CallbackQuery, ChatMemberUpdated, InputMediaPhoto,
-    InlineKeyboardMarkup, InlineKeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton, ErrorEvent,
 )
 from aiogram.filters import CommandStart, Command
 from aiogram.client.default import DefaultBotProperties
@@ -127,6 +127,7 @@ T = {
     "nothing_today": {"es": "Hoy todavía no hay documentos.", "ru": "Сегодня документов пока нет.", "en": "No documents today yet."},
 
     "queue":       {"es": "📥 Cola de documentos", "ru": "📥 Очередь документов", "en": "📥 Document queue"},
+    "invoices":    {"es": "Facturas", "ru": "Фактуры", "en": "Invoices"},
     "queue_empty": {"es": "Todo procesado.", "ru": "Всё обработано.", "en": "All processed."},
     "queue_hint":  {"es": "Pulsa para abrir y reenviar.", "ru": "Нажмите, чтобы открыть и переслать.", "en": "Tap to open and forward."},
     "archive":     {"es": "🗄 Archivo", "ru": "🗄 Архив", "en": "🗄 Archive"},
@@ -408,6 +409,15 @@ async def forward_doc_to_billz(loc: str, typ: str, file_id: str, text: str) -> b
 def pending_docs():
     return [(i, r) for i, r in enumerate(rows(DOCS_WS, force=True), start=2)
             if str(r.get("Статус")).strip() == "новый"]
+
+
+def pending_docs_by(loc: str = None, typ: str = None):
+    items = pending_docs()
+    if loc:
+        items = [(i, r) for i, r in items if str(r.get("Локаль")).strip() == loc]
+    if typ:
+        items = [(i, r) for i, r in items if str(r.get("Тип")).strip() == typ]
+    return items
 
 
 def today_stats():
@@ -827,13 +837,15 @@ async def group_intake(m: Message):
 
     if typ == "factura":
         ok = await forward_doc_to_billz(loc, typ, file_id, text)
-        try:
-            if ok:
-                await m.reply("✅ Отправлено в Билз")
-            else:
-                await m.reply("⚠️ Не удалось отправить в Билз, фактура сохранена в очереди бота")
-        except Exception:
-            pass
+        loc_name = LOCALES.get(loc, {}).get("name", loc)
+        # Статус — только патронам в личку, в группу ничего не пишем
+        status_text = (f"✅ Фактура {loc_name} отправлена в Билз" if ok
+                       else f"⚠️ Фактура {loc_name} НЕ отправлена в Билз (сохранена в очереди бота)")
+        for pid in patrons():
+            try:
+                await bot.send_message(pid, status_text)
+            except Exception:
+                pass
 
 
 # ---------------- КОЛБЭКИ ----------------
@@ -887,8 +899,9 @@ async def cb_dept(c: CallbackQuery):
         kb = [[InlineKeyboardButton(
             text=f"{MENU_EMOJI} {dept_name('menu', lang)}", callback_data="menu")]]
         if is_patron(u):
-            kb.insert(0, [InlineKeyboardButton(text=f"{t('queue', lang)} "
-                                                    f"({len(pending_docs())})", callback_data="q")])
+            kb.insert(0, [InlineKeyboardButton(
+                text=f"{DOCTYPES['factura']['emoji']} {t('invoices', lang)} "
+                     f"({len(pending_docs_by(typ='factura'))})", callback_data="inv")])
             kb.insert(0, [InlineKeyboardButton(text=t("today", lang), callback_data="today")])
         kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
         await take_over(c, f"{crumb(dept, lang)}", InlineKeyboardMarkup(inline_keyboard=kb))
@@ -1242,6 +1255,55 @@ async def cb_queue(c: CallbackQuery):
     await c.answer()
 
 
+@dp.callback_query(F.data == "inv")
+async def cb_invoices(c: CallbackQuery):
+    u = guard(c)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    lang = ulang(u)
+    nav_push(c.from_user.id, c.data)
+    kb = []
+    for code, L in LOCALES.items():
+        n = len(pending_docs_by(loc=code, typ="factura"))
+        kb.append([InlineKeyboardButton(
+            text=f"{L['emoji']} {L['name']} ({n})", callback_data=f"inv:{code}")])
+    kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
+    title = f"{DOCTYPES['factura']['emoji']} <b>{t('invoices', lang)}</b>"
+    await take_over(c, f"{title}\n\n{t('choose_locale', lang)}",
+                    InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("inv:"))
+async def cb_invoices_loc(c: CallbackQuery):
+    u = guard(c)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    lang = ulang(u)
+    nav_push(c.from_user.id, c.data)
+    loc = c.data.split(":")[1]
+    L = LOCALES.get(loc, {})
+    items = pending_docs_by(loc=loc, typ="factura")
+    title = (f"{DOCTYPES['factura']['emoji']} <b>{t('invoices', lang)}</b> · "
+             f"{L.get('emoji', '')} {L.get('name', loc)}")
+    if not items:
+        text = f"{title}\n\n{t('queue_empty', lang)}"
+        kb = [[InlineKeyboardButton(text=t("refresh", lang), callback_data=c.data)],
+              [InlineKeyboardButton(text=t("back", lang), callback_data="bk")]]
+    else:
+        text = f"{title} — {len(items)}\n\n<i>{t('queue_hint', lang)}</i>"
+        kb = []
+        for idx, r in items[:40]:
+            label = f"{r.get('Дата')} {r.get('Время')} · {r.get('Автор')}"
+            kb.append([InlineKeyboardButton(text=label[:60], callback_data=f"qd:{idx}")])
+        kb.append([InlineKeyboardButton(text=t("refresh", lang), callback_data=c.data)])
+        kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
+    await take_over(c, text[:4000], InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.answer()
+
+
 @dp.callback_query(F.data.startswith("qd:"))
 async def cb_queue_doc(c: CallbackQuery):
     u = get_user(c.from_user.id)
@@ -1338,8 +1400,7 @@ async def cb_sent(c: CallbackQuery):
     lang = ulang(u)
     set_doc_status(int(c.data.split(":")[1]), "отправлено")
     await c.answer(t("marked", lang))
-    c.data = "q"
-    await cb_queue(c)
+    await nav_back(c)
 
 
 @dp.callback_query(F.data == "noop")
@@ -1355,6 +1416,8 @@ ROUTES = [
     ("arch",  lambda cc: cb_archive(cc)),
     ("today", lambda cc: cb_today(cc)),
     ("q",     lambda cc: cb_queue(cc)),
+    ("inv:",  lambda cc: cb_invoices_loc(cc)),
+    ("inv",   lambda cc: cb_invoices(cc)),
     ("d:",    lambda cc: cb_dept(cc)),
     ("l:",    lambda cc: cb_loc(cc)),
     ("mg:",   lambda cc: cb_menu_group(cc)),
@@ -1501,9 +1564,32 @@ async def cmd_id(m: Message):
     await m.answer(f"<code>{m.from_user.id}</code>")
 
 
+# ---------------- ОШИБКИ И СТАТУС БОТА — В ЛИЧКУ ПАТРОНАМ ----------------
+
+@dp.errors()
+async def error_handler(event: ErrorEvent):
+    log.exception("Необработанная ошибка: %s", event.exception)
+    text = (f"🔴 Ошибка в боте\n"
+            f"<code>{type(event.exception).__name__}: {event.exception}</code>")
+    for pid in patrons():
+        try:
+            await bot.send_message(pid, text[:4000])
+        except Exception:
+            pass
+    return True
+
+
 async def main():
     ensure_headers()
     await bot.delete_webhook(drop_pending_updates=True)
+
+    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+    for pid in patrons():
+        try:
+            await bot.send_message(pid, f"🟢 Бот перезапущен — {now}")
+        except Exception:
+            pass
+
     await dp.start_polling(bot)
 
 
