@@ -7,6 +7,8 @@ import os
 import json
 import asyncio
 import logging
+import smtplib
+from email.message import EmailMessage
 from time import time
 from datetime import datetime
 
@@ -30,6 +32,14 @@ log = logging.getLogger("sumskaya")
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 SHEET_ID = os.environ["SHEET_ID"]
 GOOGLE_CREDS = json.loads(os.environ["GOOGLE_CREDS"])
+
+# Почта — пересылка фактур в Билз. Если не заданы, письма просто не шлются
+# (документ всё равно сохранится в очередь, будет видно в логах предупреждение).
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 465
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASS = os.environ.get("SMTP_PASS", "")
+BILLZ_EMAIL = os.environ.get("BILLZ_EMAIL", "sa@bilz.ai")
 
 COMPANY = "SUMSKAYA LINE SL"
 LANGS = ["es", "ru", "en"]
@@ -330,6 +340,69 @@ def save_doc(loc, typ, author, chat_id, msg_id, file_id, text) -> int:
 def set_doc_status(row_idx: int, status: str):
     ws(DOCS_WS).update_cell(row_idx, 10, status)
     drop_cache(DOCS_WS)
+
+
+# ---------------- ПОЧТА (пересылка фактур в Билз) ----------------
+
+def _send_email_sync(subject: str, body: str, to_addr: str,
+                      attachment: bytes = None, filename: str = None) -> bool:
+    if not SMTP_USER or not SMTP_PASS:
+        log.warning("SMTP не настроен (нет SMTP_USER/SMTP_PASS) — письмо '%s' не отправлено", subject)
+        return False
+    msg = EmailMessage()
+    msg["From"] = SMTP_USER
+    msg["To"] = to_addr
+    msg["Subject"] = subject
+    msg.set_content(body)
+    if attachment:
+        maintype, subtype = "application", "octet-stream"
+        low = (filename or "").lower()
+        if low.endswith((".jpg", ".jpeg")):
+            maintype, subtype = "image", "jpeg"
+        elif low.endswith(".png"):
+            maintype, subtype = "image", "png"
+        elif low.endswith(".pdf"):
+            maintype, subtype = "application", "pdf"
+        msg.add_attachment(attachment, maintype=maintype, subtype=subtype,
+                            filename=filename or "factura")
+    try:
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20) as s:
+            s.login(SMTP_USER, SMTP_PASS)
+            s.send_message(msg)
+        return True
+    except Exception as e:
+        log.error("Ошибка отправки письма '%s': %s", subject, e)
+        return False
+
+
+async def send_email_async(subject, body, to_addr, attachment=None, filename=None) -> bool:
+    return await asyncio.to_thread(_send_email_sync, subject, body, to_addr, attachment, filename)
+
+
+async def forward_doc_to_billz(loc: str, typ: str, file_id: str, text: str) -> bool:
+    """Пересылает фактуру (фото/файл из группы) на почту Билза."""
+    if typ != "factura":
+        return False
+
+    loc_name = LOCALES.get(loc, {}).get("name", loc)
+    now = datetime.now()
+    subject = f"Фактура — {loc_name} — {now.strftime('%d.%m.%Y')}"
+    body = text or f"Фактура от {loc_name}, {now.strftime('%d.%m.%Y %H:%M')}"
+
+    attachment, filename = None, None
+    if file_id:
+        try:
+            tg_file = await bot.get_file(file_id)
+            buf = await bot.download_file(tg_file.file_path)
+            attachment = buf.read()
+            filename = tg_file.file_path.rsplit("/", 1)[-1] or "factura.jpg"
+        except Exception as e:
+            log.error("Не удалось скачать файл из Telegram для пересылки: %s", e)
+
+    ok = await send_email_async(subject, body, BILLZ_EMAIL, attachment, filename)
+    if not ok:
+        log.warning("Фактура %s (%s) НЕ отправлена в Билз", loc_name, now.strftime("%d.%m.%Y %H:%M"))
+    return ok
 
 
 def pending_docs():
@@ -751,6 +824,16 @@ async def group_intake(m: Message):
 
     author = m.from_user.full_name if m.from_user else "—"
     save_doc(loc, typ, author, m.chat.id, m.message_id, file_id, text)
+
+    if typ == "factura":
+        ok = await forward_doc_to_billz(loc, typ, file_id, text)
+        try:
+            if ok:
+                await m.reply("✅ Отправлено в Билз")
+            else:
+                await m.reply("⚠️ Не удалось отправить в Билз, фактура сохранена в очереди бота")
+        except Exception:
+            pass
 
 
 # ---------------- КОЛБЭКИ ----------------
