@@ -7,8 +7,8 @@ import os
 import json
 import asyncio
 import logging
-import smtplib
-from email.message import EmailMessage
+import requests
+import base64
 from time import time
 from datetime import datetime
 
@@ -35,10 +35,11 @@ GOOGLE_CREDS = json.loads(os.environ["GOOGLE_CREDS"])
 
 # Почта — пересылка фактур в Билз. Если не заданы, письма просто не шлются
 # (документ всё равно сохранится в очередь, будет видно в логах предупреждение).
-SMTP_HOST = "smtp.gmail.com"
-SMTP_PORT = 587
-SMTP_USER = os.environ.get("SMTP_USER", "")
-SMTP_PASS = os.environ.get("SMTP_PASS", "")
+# Почта — пересылка фактур в Билз, через Brevo (HTTP API, т.к. Railway
+# блокирует прямые SMTP-подключения — Errno 101 Network unreachable).
+BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
+BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "")
+SMTP_USER = os.environ.get("SMTP_USER", "")          # адрес-отправитель (должен быть подтверждён в Brevo)
 BILLZ_EMAIL = os.environ.get("BILLZ_EMAIL", "sa@bilz.ai")
 
 COMPANY = "SUMSKAYA LINE SL"
@@ -343,37 +344,43 @@ def set_doc_status(row_idx: int, status: str):
     drop_cache(DOCS_WS)
 
 
-# ---------------- ПОЧТА (пересылка фактур в Билз) ----------------
+# ---------------- ПОЧТА (пересылка фактур в Билз, через Brevo API) ----------------
 
 def _send_email_sync(subject: str, body: str, to_addr: str,
                       attachment: bytes = None, filename: str = None) -> bool:
-    if not SMTP_USER or not SMTP_PASS:
-        log.warning("SMTP не настроен (нет SMTP_USER/SMTP_PASS) — письмо '%s' не отправлено", subject)
+    if not BREVO_API_KEY or not SMTP_USER:
+        log.warning("Brevo не настроен (нет BREVO_API_KEY/SMTP_USER) — письмо '%s' не отправлено", subject)
         return False
-    msg = EmailMessage()
-    msg["From"] = SMTP_USER
-    msg["To"] = to_addr
-    msg["Subject"] = subject
-    msg.set_content(body)
+
+    payload = {
+        "sender": {"name": COMPANY, "email": SMTP_USER},
+        "to": [{"email": to_addr}],
+        "subject": subject,
+        "textContent": body,
+    }
     if attachment:
-        maintype, subtype = "application", "octet-stream"
-        low = (filename or "").lower()
-        if low.endswith((".jpg", ".jpeg")):
-            maintype, subtype = "image", "jpeg"
-        elif low.endswith(".png"):
-            maintype, subtype = "image", "png"
-        elif low.endswith(".pdf"):
-            maintype, subtype = "application", "pdf"
-        msg.add_attachment(attachment, maintype=maintype, subtype=subtype,
-                            filename=filename or "factura")
+        payload["attachment"] = [{
+            "content": base64.b64encode(attachment).decode("ascii"),
+            "name": filename or "factura.jpg",
+        }]
+
     try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as s:
-            s.starttls()
-            s.login(SMTP_USER, SMTP_PASS)
-            s.send_message(msg)
-        return True
+        r = requests.post(
+            BREVO_API_URL,
+            json=payload,
+            headers={
+                "api-key": BREVO_API_KEY,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            timeout=20,
+        )
+        if r.status_code in (200, 201):
+            return True
+        log.error("Brevo вернул ошибку %s для '%s': %s", r.status_code, subject, r.text[:300])
+        return False
     except Exception as e:
-        log.error("Ошибка отправки письма '%s': %s", subject, e)
+        log.error("Ошибка отправки письма '%s' через Brevo: %s", subject, e)
         return False
 
 
