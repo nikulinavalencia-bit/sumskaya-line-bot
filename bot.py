@@ -873,10 +873,8 @@ async def group_intake(m: Message):
         file_id, text, is_photo = m.photo[-1].file_id, m.caption, True
     elif m.document:
         file_id, text = m.document.file_id, m.caption
-    elif m.text:
-        text = m.text
     else:
-        return
+        return  # обычный текст в группе — не документ, игнорируем
 
     author = m.from_user.full_name if m.from_user else "—"
     if doc_already_saved(m.chat.id, m.message_id):
