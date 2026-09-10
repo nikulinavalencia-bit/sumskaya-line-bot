@@ -9,6 +9,7 @@ import asyncio
 import logging
 import requests
 import base64
+import re
 from time import time
 from datetime import datetime
 
@@ -326,6 +327,22 @@ def group_map(chat_id: int):
     return None
 
 
+_seen_msgs = set()  # (chat_id, message_id) — защита от повторной обработки в рамках этого запуска
+
+
+def doc_already_saved(chat_id, msg_id) -> bool:
+    """Проверяет, не сохраняли ли мы уже этот же документ (на случай повторной
+    доставки одного и того же апдейта Telegram при рестарте бота)."""
+    key = (str(chat_id), str(msg_id))
+    if key in _seen_msgs:
+        return True
+    for r in rows(DOCS_WS, force=True):
+        if str(r.get("ChatID")) == key[0] and str(r.get("MessageID")) == key[1]:
+            _seen_msgs.add(key)
+            return True
+    return False
+
+
 def save_doc(loc, typ, author, chat_id, msg_id, file_id, text) -> int:
     now = datetime.now()
     w = ws(DOCS_WS)
@@ -394,6 +411,18 @@ async def send_email_async(subject, body, to_addr, attachment=None, filename=Non
 
 
 EMAIL_SUBJECT_PREFIX = {"factura": "Фактура", "baja": "Списание"}
+
+# Поставщики товарного учёта — только их фактуры летят в Билз.
+# Сотрудник ставит хэштег поставщика в подписи к фото (#Levante, #Macro и т.д.);
+# хозтовары/тара (Levasel и всё, чего нет в списке) в Билз не пересылаются.
+BILLZ_SUPPLIER_TAGS = {"voravins", "levante", "cominport", "cocacola", "macro", "tgt", "campoluz"}
+
+
+def caption_matches_billz_supplier(text: str) -> bool:
+    if not text:
+        return False
+    norm = re.sub(r"[^a-zа-яё0-9]", "", text.lower())
+    return any(tag in norm for tag in BILLZ_SUPPLIER_TAGS)
 
 
 async def forward_doc_to_billz(loc: str, typ: str, file_id: str, text: str) -> bool:
@@ -850,11 +879,20 @@ async def group_intake(m: Message):
         return
 
     author = m.from_user.full_name if m.from_user else "—"
+    if doc_already_saved(m.chat.id, m.message_id):
+        return
     row_idx = save_doc(loc, typ, author, m.chat.id, m.message_id, file_id, text)
+    _seen_msgs.add((str(m.chat.id), str(m.message_id)))
 
     if typ in EMAIL_SUBJECT_PREFIX:  # factura, baja — пересылаем в Билз
-        ok = await forward_doc_to_billz(loc, typ, file_id, text)
-        set_doc_email(row_idx, "✅" if ok else "⚠️")
+        should_forward = True
+        if typ == "factura":
+            should_forward = caption_matches_billz_supplier(text)
+        if should_forward:
+            ok = await forward_doc_to_billz(loc, typ, file_id, text)
+            set_doc_email(row_idx, "✅" if ok else "⚠️")
+        else:
+            set_doc_email(row_idx, "➖")  # не товарный поставщик — не пересылаем
 
 
 # ---------------- КОЛБЭКИ ----------------
@@ -1368,18 +1406,45 @@ async def cb_queue_doc(c: CallbackQuery):
            f" · {L.get('emoji', '')} {L.get('name', loc)}\n"
            f"{t('from', lang)}: {r.get('Автор')}\n{r.get('Дата')} {r.get('Время')}")
     if mark:
-        cap += f"\n{mark} {'отправлено в Билз' if mark == '✅' else 'не отправлено в Билз'}"
+        mark_text = {"✅": "отправлено в Билз", "⚠️": "не отправлено в Билз",
+                     "➖": "не товарный поставщик — не пересылалось"}.get(mark, "")
+        cap += f"\n{mark} {mark_text}"
     txt = str(r.get("Текст") or "").strip()
     if txt:
         cap += f"\n\n{txt[:600]}"
     kb = []
     if not done:
         kb.append([InlineKeyboardButton(text=t("sent_btn", lang), callback_data=f"sent:{idx}")])
+    if typ in EMAIL_SUBJECT_PREFIX and mark != "✅":
+        kb.append([InlineKeyboardButton(text="📧 Переслать в Билз", callback_data=f"fwd:{idx}")])
     kb.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"del:{idx}")])
     kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
     fid = str(r.get("FileID") or "").strip() or None
     await take_over(c, cap, InlineKeyboardMarkup(inline_keyboard=kb), photo=fid)
     await c.answer()
+
+
+@dp.callback_query(F.data.startswith("fwd:"))
+async def cb_forward_doc(c: CallbackQuery):
+    u = get_user(c.from_user.id)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    idx = int(c.data.split(":")[1])
+    data = rows(DOCS_WS, force=True)
+    try:
+        r = data[idx - 2]
+    except IndexError:
+        await c.answer("—", show_alert=True)
+        return
+    loc = str(r.get("Локаль")).strip()
+    typ = str(r.get("Тип")).strip()
+    file_id = str(r.get("FileID") or "").strip() or None
+    text = str(r.get("Текст") or "").strip()
+    ok = await forward_doc_to_billz(loc, typ, file_id, text)
+    set_doc_email(idx, "✅" if ok else "⚠️")
+    await c.answer("✅ Отправлено" if ok else "⚠️ Не удалось отправить", show_alert=True)
+    await route(c, c.data.replace("fwd:", "qd:"))
 
 
 @dp.callback_query(F.data.startswith("del:"))
