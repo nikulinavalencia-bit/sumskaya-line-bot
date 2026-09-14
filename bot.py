@@ -42,6 +42,14 @@ BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "")
 SMTP_USER = os.environ.get("SMTP_USER", "")          # адрес-отправитель (должен быть подтверждён в Brevo)
 BILLZ_EMAIL = os.environ.get("BILLZ_EMAIL", "sa@bilz.ai")
 APPLICANTS_SHEET_ID = os.environ.get("APPLICANTS_SHEET_ID", "1WvQz7v3hu31Rw4JSXeQXszK4RY9t5FYSDo2ok1CrTF4")
+
+# Gmail API — читаем почту sl.valencia.resta@gmail.com на предмет готовых
+# контрактов/баха/камбио от Histora (по имени вложения).
+GMAIL_CLIENT_ID = os.environ.get("GMAIL_CLIENT_ID", "")
+GMAIL_CLIENT_SECRET = os.environ.get("GMAIL_CLIENT_SECRET", "")
+GMAIL_REFRESH_TOKEN = os.environ.get("GMAIL_REFRESH_TOKEN", "")
+GMAIL_ATTACHMENT_KEYWORDS = ("CONTRATO", "BAJA", "CAMBIO")
+GMAIL_CHECK_INTERVAL = 15 * 60  # секунд
 APPLICANTS_WS_NAME = os.environ.get("APPLICANTS_WS_NAME", "Form_Responses")
 
 COMPANY = "SUMSKAYA LINE SL"
@@ -186,6 +194,7 @@ TECH_WS = "TechCards"
 PHOTOS_WS = "Photos"
 ARCHIVE_WS = "Archive"
 HR_WS = "HR"
+MAIL_WS = "MailContracts"
 
 HEADERS = {
     USERS_WS:   ["ID", "Имя", "Роль", "Отделы", "Статус", "Язык"],
@@ -202,6 +211,7 @@ HEADERS = {
     HR_WS:      ["RowKey", "ФИО", "Локаль", "Должность", "Дата заявки",
                  "Статус", "Обновил", "Дата обновления",
                  "Срок документа", "Разрешение на работу"],
+    MAIL_WS:    ["MessageID", "Дата", "От кого", "Тема", "Вложение"],
 }
 
 _cache = {}
@@ -457,6 +467,154 @@ def hr_doc_warning(r: dict) -> str:
     if (d - today).days <= 30:
         return f"⚠️ истекает {expiry_raw}"
     return ""
+
+
+# ---------------- GMAIL: контракты/baja/cambio от Histora ----------------
+
+_gmail_access_token = {"token": "", "exp": 0}
+
+
+def _gmail_get_access_token_sync() -> str:
+    if _gmail_access_token["token"] and time() < _gmail_access_token["exp"] - 60:
+        return _gmail_access_token["token"]
+    if not (GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET and GMAIL_REFRESH_TOKEN):
+        return ""
+    try:
+        r = requests.post("https://oauth2.googleapis.com/token", data={
+            "client_id": GMAIL_CLIENT_ID,
+            "client_secret": GMAIL_CLIENT_SECRET,
+            "refresh_token": GMAIL_REFRESH_TOKEN,
+            "grant_type": "refresh_token",
+        }, timeout=20)
+        if r.status_code != 200:
+            log.error("Не удалось обновить Gmail-токен: %s %s", r.status_code, r.text[:300])
+            return ""
+        data = r.json()
+        _gmail_access_token["token"] = data["access_token"]
+        _gmail_access_token["exp"] = time() + int(data.get("expires_in", 3600))
+        return _gmail_access_token["token"]
+    except Exception as e:
+        log.error("Ошибка получения Gmail-токена: %s", e)
+        return ""
+
+
+def _gmail_api_get_sync(path: str, params: dict = None):
+    token = _gmail_get_access_token_sync()
+    if not token:
+        return None
+    try:
+        r = requests.get(f"https://gmail.googleapis.com/gmail/v1/users/me/{path}",
+                          headers={"Authorization": f"Bearer {token}"},
+                          params=params or {}, timeout=20)
+        if r.status_code != 200:
+            log.error("Gmail API ошибка %s на %s: %s", r.status_code, path, r.text[:300])
+            return None
+        return r.json()
+    except Exception as e:
+        log.error("Ошибка запроса к Gmail API (%s): %s", path, e)
+        return None
+
+
+def _walk_gmail_parts(payload: dict):
+    """Рекурсивно обходит части письма и возвращает список вложений
+    (filename, attachmentId)."""
+    out = []
+    if not payload:
+        return out
+    filename = payload.get("filename")
+    body = payload.get("body", {})
+    if filename and body.get("attachmentId"):
+        out.append((filename, body["attachmentId"]))
+    for p in payload.get("parts", []):
+        out.extend(_walk_gmail_parts(p))
+    return out
+
+
+def _check_gmail_contracts_sync():
+    """Синхронная (блокирующая) проверка почты — вызывается через to_thread."""
+    seen = {str(r.get("MessageID")) for r in rows(MAIL_WS, force=True)}
+    q = " OR ".join(f"filename:{kw}" for kw in GMAIL_ATTACHMENT_KEYWORDS)
+    data = _gmail_api_get_sync("messages", {"q": q, "maxResults": 20})
+    if not data:
+        return []
+    found = []
+    for m in data.get("messages", []):
+        mid = m["id"]
+        if mid in seen:
+            continue
+        msg = _gmail_api_get_sync(f"messages/{mid}", {"format": "full"})
+        if not msg:
+            continue
+        headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
+        attachments = _walk_gmail_parts(msg.get("payload", {}))
+        matching = [(fn, aid) for fn, aid in attachments
+                    if any(kw.lower() in fn.lower() for kw in GMAIL_ATTACHMENT_KEYWORDS)]
+        if not matching:
+            continue
+        found.append({
+            "id": mid, "from": headers.get("From", ""), "subject": headers.get("Subject", ""),
+            "date": headers.get("Date", ""), "attachments": matching,
+        })
+    return found
+
+
+async def check_gmail_contracts():
+    return await asyncio.to_thread(_check_gmail_contracts_sync)
+
+
+def _gmail_download_attachment_sync(msg_id: str, attachment_id: str):
+    data = _gmail_api_get_sync(f"messages/{msg_id}/attachments/{attachment_id}")
+    if not data or "data" not in data:
+        return None
+    import base64 as b64
+    raw = data["data"].replace("-", "+").replace("_", "/")
+    return b64.b64decode(raw)
+
+
+async def gmail_download_attachment(msg_id: str, attachment_id: str):
+    return await asyncio.to_thread(_gmail_download_attachment_sync, msg_id, attachment_id)
+
+
+def mark_mail_seen(msg_id: str, date: str, sender: str, subject: str, attachment: str):
+    ws(MAIL_WS).append_row([msg_id, date, sender, subject, attachment], value_input_option="RAW")
+    drop_cache(MAIL_WS)
+
+
+async def notify_new_contracts() -> int:
+    """Проверяет почту, шлёт патронам найденные новые письма с документами
+    (сам файл вложением), отмечает как показанные. Возвращает сколько нашли."""
+    found = await check_gmail_contracts()
+    for item in found:
+        names = ", ".join(fn for fn, _ in item["attachments"])
+        text = (f"📨 <b>Новый документ от Histora</b>\n"
+                f"От: {item['from']}\nТема: {item['subject']}\n"
+                f"Дата: {item['date']}\nВложение: {names}")
+        for pid in patrons():
+            try:
+                await bot.send_message(pid, text)
+            except Exception:
+                pass
+        for fn, aid in item["attachments"]:
+            raw = await gmail_download_attachment(item["id"], aid)
+            if not raw:
+                continue
+            for pid in patrons():
+                try:
+                    await bot.send_document(pid, BufferedInputFile(raw, filename=fn))
+                except Exception:
+                    pass
+        mark_mail_seen(item["id"], item["date"], item["from"], item["subject"], names)
+    return len(found)
+
+
+async def gmail_watch_loop():
+    """Фоновая задача — проверяет почту каждые GMAIL_CHECK_INTERVAL секунд."""
+    while True:
+        try:
+            await notify_new_contracts()
+        except Exception as e:
+            log.error("Ошибка фоновой проверки почты: %s", e)
+        await asyncio.sleep(GMAIL_CHECK_INTERVAL)
 
 
 # ---------------- ПОЛЬЗОВАТЕЛИ ----------------
@@ -1159,6 +1317,7 @@ async def cb_dept(c: CallbackQuery):
             if n_warn:
                 label = f"⚠️ {label} — {n_warn} с проблемой"
             kb.append([InlineKeyboardButton(text=label, callback_data="hrc")])
+            kb.append([InlineKeyboardButton(text="📧 Проверить почту на контракты", callback_data="hrmail")])
         kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
         await take_over(c, f"{crumb(dept, lang)}", InlineKeyboardMarkup(inline_keyboard=kb))
         await c.answer()
@@ -1686,6 +1845,18 @@ async def cb_hr_add(c: CallbackQuery):
     await route(c, "hrn")
 
 
+@dp.callback_query(F.data == "hrmail")
+async def cb_hr_mail_check(c: CallbackQuery):
+    u = get_user(c.from_user.id)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    await c.answer("Проверяю почту…")
+    n = await notify_new_contracts()
+    if n == 0:
+        await bot.send_message(c.from_user.id, "Новых писем с документами не найдено.")
+
+
 @dp.callback_query(F.data == "hrc")
 async def cb_hr_checklist(c: CallbackQuery):
     u = guard(c)
@@ -2146,6 +2317,9 @@ async def main():
             await bot.send_message(pid, f"🟢 Бот перезапущен — {now}")
         except Exception:
             pass
+
+    if GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET and GMAIL_REFRESH_TOKEN:
+        asyncio.create_task(gmail_watch_loop())
 
     await dp.start_polling(bot)
 
