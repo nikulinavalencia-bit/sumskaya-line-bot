@@ -285,7 +285,15 @@ def applicants_ws():
     global _applicants_sh
     if _applicants_sh is None:
         _applicants_sh = _gc.open_by_key(APPLICANTS_SHEET_ID)
-    return _applicants_sh.worksheet(APPLICANTS_WS_NAME)
+    sheets = _applicants_sh.worksheets()
+    target = _norm(APPLICANTS_WS_NAME)
+    for w in sheets:
+        if _norm(w.title) == target:
+            return w
+    # точного совпадения нет — берём первую вкладку таблицы
+    log.warning("лист '%s' не найден в таблице заявок, использую '%s'",
+                APPLICANTS_WS_NAME, sheets[0].title)
+    return sheets[0]
 
 
 def applicants_rows(force=False):
@@ -1044,7 +1052,8 @@ async def cmd_chatid(m: Message):
     await m.answer(f"ChatID: <code>{m.chat.id}</code>\nТип: {m.chat.type}")
 
 
-@dp.message(F.chat.type.in_({"group", "supergroup"}))
+@dp.message(F.chat.type.in_({"group", "supergroup"}),
+            lambda m: not (m.text and m.text.startswith("/")))
 async def group_intake(m: Message):
     mapped = group_map(m.chat.id)
     if not mapped:
