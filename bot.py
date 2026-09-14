@@ -20,6 +20,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message, CallbackQuery, ChatMemberUpdated, InputMediaPhoto,
     InlineKeyboardMarkup, InlineKeyboardButton, ErrorEvent, BotCommand,
+    BufferedInputFile,
 )
 from aiogram.filters import CommandStart, Command
 from aiogram.client.default import DefaultBotProperties
@@ -40,6 +41,8 @@ BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
 BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "")
 SMTP_USER = os.environ.get("SMTP_USER", "")          # адрес-отправитель (должен быть подтверждён в Brevo)
 BILLZ_EMAIL = os.environ.get("BILLZ_EMAIL", "sa@bilz.ai")
+APPLICANTS_SHEET_ID = os.environ.get("APPLICANTS_SHEET_ID", "1WvQz7v3hu31Rw4JSXeQXszK4RY9t5FYSDo2ok1CrTF4")
+APPLICANTS_WS_NAME = os.environ.get("APPLICANTS_WS_NAME", "Form_Responses")
 
 COMPANY = "SUMSKAYA LINE SL"
 LANGS = ["es", "ru", "en"]
@@ -182,6 +185,7 @@ MENU_WS = "Menu"
 TECH_WS = "TechCards"
 PHOTOS_WS = "Photos"
 ARCHIVE_WS = "Archive"
+HR_WS = "HR"
 
 HEADERS = {
     USERS_WS:   ["ID", "Имя", "Роль", "Отделы", "Статус", "Язык"],
@@ -195,6 +199,9 @@ HEADERS = {
                  "Брутто", "Нетто", "Итого вес, кг", "На выход"],
     PHOTOS_WS:  ["Блюдо", "FileID", "Кто добавил", "Дата"],
     ARCHIVE_WS: ["Блюдо", "Кто убрал", "Дата"],
+    HR_WS:      ["RowKey", "ФИО", "Локаль", "Должность", "Дата заявки",
+                 "Статус", "Обновил", "Дата обновления",
+                 "Срок документа", "Разрешение на работу"],
 }
 
 _cache = {}
@@ -267,6 +274,181 @@ def rows(name: str, force=False):
 
 def drop_cache(name: str):
     _cache[name] = (0, [])
+
+
+# ---------------- HR: заявки кандидатов + чек-лист оформления ----------------
+
+_applicants_sh = None
+
+
+def applicants_ws():
+    global _applicants_sh
+    if _applicants_sh is None:
+        _applicants_sh = _gc.open_by_key(APPLICANTS_SHEET_ID)
+    return _applicants_sh.worksheet(APPLICANTS_WS_NAME)
+
+
+def applicants_rows(force=False):
+    ts, data = _cache.get("applicants", (0, []))
+    if force or time() - ts > CACHE_TTL:
+        w = applicants_ws()
+        values = w.get_all_values()
+        if not values:
+            data = []
+        else:
+            headers = values[0]
+            seen = {}
+            safe_headers = []
+            for h in headers:
+                h = h.strip()
+                if h in seen:
+                    seen[h] += 1
+                    safe_headers.append(f"{h}_{seen[h]}")
+                else:
+                    seen[h] = 0
+                    safe_headers.append(h)
+            data = [dict(zip(safe_headers, row)) for row in values[1:] if any(row)]
+        _cache["applicants"] = (time(), data)
+    return data
+
+
+HR_STAGES = [
+    "Заявка получена",
+    "Отправлено в Histora",
+    "Контракт получен",
+    "Проверен",
+    "Отправлено на подпись",
+    "Подписано",
+    "Заведено в Control Laboral",
+    "Активен",
+]
+
+
+def tracked_row_keys() -> set:
+    return {str(r.get("RowKey")) for r in rows(HR_WS, force=True)}
+
+
+def new_applicants():
+    """Заявки из формы, ещё не добавленные в чек-лист HR."""
+    tracked = tracked_row_keys()
+    out = []
+    for idx, r in enumerate(applicants_rows(), start=2):
+        key = str(idx)
+        if key not in tracked:
+            out.append((idx, r))
+    return out
+
+
+def format_applicant_block(r: dict) -> str:
+    nombre = str(r.get("Nombre", "")).strip()
+    apellido = str(r.get("Apellido", "")).strip()
+    puesto = str(r.get("Título profesional", "")).strip()
+    horas = str(r.get("Número de horas bajo contrato", "")).strip()
+    lines = [
+        f"{nombre} {apellido}".strip(),
+        str(r.get("Fecha de nacimiento", "")).strip(),
+        str(r.get("NIE/TIE", "")).strip(),
+        str(r.get("Domicilio", "")).strip(),
+        str(r.get("Código postal", "")).strip(),
+        str(r.get("IBAN", "")).strip(),
+        str(r.get("Correo electrónico", "")).strip(),
+        str(r.get("Teléfono", "")).strip(),
+        str(r.get("Numero seguridad social", "")).strip(),
+        f"{puesto} {horas}".strip(),
+        str(r.get("Fecha de inicio", "")).strip(),
+        str(r.get("Local", "")).strip(),
+    ]
+    return "\n".join(l for l in lines if l)
+
+
+def applicant_doc_link(r: dict) -> str:
+    for k, v in r.items():
+        v = str(v).strip()
+        if v.startswith("http") and "drive.google.com" in v:
+            return v
+    return ""
+
+
+def _drive_file_id(link: str) -> str:
+    m = re.search(r"(?:id=|/d/)([a-zA-Z0-9_-]{15,})", link)
+    return m.group(1) if m else ""
+
+
+def _download_drive_file_sync(link: str):
+    file_id = _drive_file_id(link)
+    if not file_id:
+        return None
+    try:
+        r = requests.get(f"https://drive.google.com/uc?export=download&id={file_id}", timeout=20)
+        ctype = r.headers.get("Content-Type", "")
+        if r.status_code == 200 and ctype.startswith(("image/", "application/octet-stream")):
+            return r.content
+    except Exception as e:
+        log.error("Не удалось скачать файл с Drive: %s", e)
+    return None
+
+
+async def download_drive_file(link: str):
+    return await asyncio.to_thread(_download_drive_file_sync, link)
+
+
+def add_to_hr_checklist(row_idx: int, r: dict, author: str) -> int:
+    now = datetime.now()
+    fio = f"{r.get('Nombre', '')} {r.get('Apellido', '')}".strip()
+    w = ws(HR_WS)
+    w.append_row([
+        str(row_idx), fio, str(r.get("Local", "")).strip(),
+        str(r.get("Título profesional", "")).strip(),
+        now.strftime("%d.%m.%Y"), HR_STAGES[0], author, now.strftime("%d.%m.%Y %H:%M"),
+    ], value_input_option="RAW")
+    drop_cache(HR_WS)
+    return len(w.col_values(1))
+
+
+def set_hr_stage(hr_row_idx: int, stage: str, author: str):
+    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+    w = ws(HR_WS)
+    w.update_cell(hr_row_idx, 6, stage)
+    w.update_cell(hr_row_idx, 7, author)
+    w.update_cell(hr_row_idx, 8, now)
+    drop_cache(HR_WS)
+
+
+def set_hr_doc_info(hr_row_idx: int, expiry_str: str, permit_ok: bool):
+    w = ws(HR_WS)
+    w.update_cell(hr_row_idx, 9, expiry_str)
+    w.update_cell(hr_row_idx, 10, "да" if permit_ok else "нет")
+    drop_cache(HR_WS)
+
+
+def parse_ddmmyyyy(s: str):
+    s = s.strip()
+    for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def hr_doc_warning(r: dict) -> str:
+    """Возвращает пометку, если с документом что-то не так: истёк, скоро истекает,
+    не указан срок, или явно нет разрешения на работу."""
+    permit = str(r.get("Разрешение на работу", "")).strip().lower()
+    if permit == "нет":
+        return "🚫 нет разрешения на работу"
+    expiry_raw = str(r.get("Срок документа", "")).strip()
+    if not expiry_raw:
+        return "❔ срок документа не указан"
+    d = parse_ddmmyyyy(expiry_raw)
+    if not d:
+        return "❔ срок документа не распознан"
+    today = datetime.now().date()
+    if d < today:
+        return f"⛔ документ просрочен ({expiry_raw})"
+    if (d - today).days <= 30:
+        return f"⚠️ истекает {expiry_raw}"
+    return ""
 
 
 # ---------------- ПОЛЬЗОВАТЕЛИ ----------------
@@ -630,6 +812,7 @@ def save_photo(dish: str, file_id: str, who: str):
 
 # кто сейчас загружает фото: uid -> название блюда
 _awaiting_photo = {}
+_awaiting_hr_input = {}  # user_id -> hr_row_idx: ждём от патрона срок документа + разрешение
 
 
 def nc(v, nd=2) -> str:
@@ -956,6 +1139,22 @@ async def cb_dept(c: CallbackQuery):
         await c.answer()
         return
 
+    if dept == "hr":
+        kb = []
+        if is_patron(u):
+            kb.append([InlineKeyboardButton(
+                text=f"🆕 Новые заявки ({len(new_applicants())})", callback_data="hrn")])
+            checklist = rows(HR_WS)
+            n_warn = sum(1 for r in checklist if hr_doc_warning(r))
+            label = f"📋 Чек-лист сотрудников ({len(checklist)})"
+            if n_warn:
+                label = f"⚠️ {label} — {n_warn} с проблемой"
+            kb.append([InlineKeyboardButton(text=label, callback_data="hrc")])
+        kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
+        await take_over(c, f"{crumb(dept, lang)}", InlineKeyboardMarkup(inline_keyboard=kb))
+        await c.answer()
+        return
+
     kb = [[InlineKeyboardButton(text=f"{l['emoji']} {l['name']}", callback_data=f"l:{dept}:{code}")]
           for code, l in LOCALES.items()]
     kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
@@ -1182,6 +1381,27 @@ async def on_private_photo(m: Message):
         pass
 
 
+@dp.message(F.text, F.chat.type == "private")
+async def on_private_text(m: Message):
+    idx = _awaiting_hr_input.get(m.from_user.id)
+    if not idx:
+        return
+    parts = [p.strip() for p in m.text.strip().splitlines() if p.strip()]
+    if len(parts) < 2:
+        await m.answer("Нужно две строки: дата и да/нет. Попробуй ещё раз.")
+        return
+    date_str, permit_str = parts[0], parts[1].lower()
+    if not parse_ddmmyyyy(date_str):
+        await m.answer("Дата не распознана, формат дд.мм.гггг. Попробуй ещё раз.")
+        return
+    if permit_str not in ("да", "нет"):
+        await m.answer("Вторая строка должна быть 'да' или 'нет'. Попробуй ещё раз.")
+        return
+    _awaiting_hr_input.pop(m.from_user.id, None)
+    set_hr_doc_info(idx, date_str, permit_str == "да")
+    await m.answer("Сохранено ✅")
+
+
 @dp.callback_query(F.data.startswith("tk:"))
 async def cb_tech(c: CallbackQuery):
     u = guard(c)
@@ -1378,6 +1598,207 @@ async def cb_writeoffs_loc(c: CallbackQuery):
     await show_doc_locale_list(c, "baja", c.data.split(":")[1])
 
 
+# ---------------- HR ----------------
+
+@dp.callback_query(F.data == "hrn")
+async def cb_hr_new(c: CallbackQuery):
+    u = guard(c)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    lang = ulang(u)
+    nav_push(c.from_user.id, c.data)
+    items = new_applicants()
+    title = "🆕 <b>Новые заявки</b>"
+    if not items:
+        text = f"{title}\n\nНовых заявок нет."
+        kb = [[InlineKeyboardButton(text=t("refresh", lang), callback_data="hrn")],
+              [InlineKeyboardButton(text=t("back", lang), callback_data="bk")]]
+    else:
+        text = f"{title} — {len(items)}"
+        kb = []
+        for idx, r in items[:40]:
+            name = f"{r.get('Nombre', '')} {r.get('Apellido', '')}".strip()
+            local = str(r.get("Local", "")).strip()
+            label = f"{name} · {local}" if local else name
+            kb.append([InlineKeyboardButton(text=label[:60], callback_data=f"hrn:{idx}")])
+        kb.append([InlineKeyboardButton(text=t("refresh", lang), callback_data="hrn")])
+        kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
+    await take_over(c, text, InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("hrn:"))
+async def cb_hr_new_detail(c: CallbackQuery):
+    u = guard(c)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    nav_push(c.from_user.id, c.data)
+    idx = int(c.data.split(":")[1])
+    data = applicants_rows()
+    try:
+        r = data[idx - 2]
+    except IndexError:
+        await c.answer("—", show_alert=True)
+        return
+    block = format_applicant_block(r)
+    link = applicant_doc_link(r)
+    text = f"🆕 <b>Заявка</b>\n\n<code>{block}</code>"
+    photo = None
+    if link:
+        raw = await download_drive_file(link)
+        if raw:
+            photo = BufferedInputFile(raw, filename="document.jpg")
+        else:
+            text += f"\n\n📎 <a href=\"{link}\">Фото документа (открыть по ссылке)</a>"
+    kb = [[InlineKeyboardButton(text="➕ Добавить в чек-лист", callback_data=f"hradd:{idx}")],
+          [InlineKeyboardButton(text=t("back", ulang(u)), callback_data="bk")]]
+    await take_over(c, text, InlineKeyboardMarkup(inline_keyboard=kb), photo=photo)
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("hradd:"))
+async def cb_hr_add(c: CallbackQuery):
+    u = get_user(c.from_user.id)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    idx = int(c.data.split(":")[1])
+    data = applicants_rows()
+    try:
+        r = data[idx - 2]
+    except IndexError:
+        await c.answer("—", show_alert=True)
+        return
+    author = c.from_user.full_name if c.from_user else "—"
+    add_to_hr_checklist(idx, r, author)
+    await c.answer("Добавлено в чек-лист ✅", show_alert=True)
+    await route(c, "hrn")
+
+
+@dp.callback_query(F.data == "hrc")
+async def cb_hr_checklist(c: CallbackQuery):
+    u = guard(c)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    lang = ulang(u)
+    nav_push(c.from_user.id, c.data)
+    items = list(enumerate(rows(HR_WS, force=True), start=2))
+    title = "📋 <b>Чек-лист сотрудников</b>"
+    if not items:
+        text = f"{title}\n\nПусто."
+        kb = [[InlineKeyboardButton(text=t("refresh", lang), callback_data="hrc")],
+              [InlineKeyboardButton(text=t("back", lang), callback_data="bk")]]
+    else:
+        text = f"{title} — {len(items)}"
+        kb = []
+        for idx, r in items:
+            fio = str(r.get("ФИО", "")).strip()
+            stage = str(r.get("Статус", "")).strip()
+            warn = hr_doc_warning(r)
+            label = f"{fio} · {stage}"
+            if warn:
+                label = f"⚠️ {label}"
+            kb.append([InlineKeyboardButton(text=label[:60], callback_data=f"hrc:{idx}")])
+        kb.append([InlineKeyboardButton(text=t("refresh", lang), callback_data="hrc")])
+        kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
+    await take_over(c, text, InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("hrc:"))
+async def cb_hr_checklist_detail(c: CallbackQuery):
+    u = guard(c)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    nav_push(c.from_user.id, c.data)
+    idx = int(c.data.split(":")[1])
+    data = rows(HR_WS, force=True)
+    try:
+        r = data[idx - 2]
+    except IndexError:
+        await c.answer("—", show_alert=True)
+        return
+    fio = str(r.get("ФИО", "")).strip()
+    loc = str(r.get("Локаль", "")).strip()
+    stage = str(r.get("Статус", "")).strip()
+    stage_idx = HR_STAGES.index(stage) if stage in HR_STAGES else 0
+    expiry = str(r.get("Срок документа", "")).strip() or "не указан"
+    permit = str(r.get("Разрешение на работу", "")).strip() or "не указано"
+    text = (f"📋 <b>{fio}</b>\n{loc} · {r.get('Должность', '')}\n\n"
+            f"Этап: <b>{stage}</b>\nЗаявка от: {r.get('Дата заявки', '')}\n"
+            f"Обновил: {r.get('Обновил', '')} ({r.get('Дата обновления', '')})\n\n"
+            f"📅 Срок документа: {expiry}\n✅ Разрешение на работу: {permit}")
+    warn = hr_doc_warning(r)
+    if warn:
+        text += f"\n\n{warn}"
+    kb = []
+    if stage_idx < len(HR_STAGES) - 1:
+        nxt = HR_STAGES[stage_idx + 1]
+        kb.append([InlineKeyboardButton(text=f"➡️ {nxt}", callback_data=f"hrnext:{idx}")])
+    kb.append([InlineKeyboardButton(text="📅 Указать срок и разрешение", callback_data=f"hrdate:{idx}")])
+    kb.append([InlineKeyboardButton(text="🗑 Удалить из чек-листа", callback_data=f"hrdel:{idx}")])
+    kb.append([InlineKeyboardButton(text=t("back", ulang(u)), callback_data="bk")])
+    await take_over(c, text, InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("hrdate:"))
+async def cb_hr_ask_date(c: CallbackQuery):
+    u = get_user(c.from_user.id)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    idx = int(c.data.split(":")[1])
+    _awaiting_hr_input[c.from_user.id] = idx
+    await c.answer()
+    await bot.send_message(
+        c.from_user.id,
+        "Напиши двумя строками:\n"
+        "1) срок действия документа — дд.мм.гггг\n"
+        "2) есть разрешение на работу — да / нет\n\n"
+        "Например:\n<code>15.03.2027\nда</code>",
+    )
+
+
+@dp.callback_query(F.data.startswith("hrnext:"))
+async def cb_hr_next(c: CallbackQuery):
+    u = get_user(c.from_user.id)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    idx = int(c.data.split(":")[1])
+    data = rows(HR_WS, force=True)
+    try:
+        r = data[idx - 2]
+    except IndexError:
+        await c.answer("—", show_alert=True)
+        return
+    stage = str(r.get("Статус", "")).strip()
+    stage_idx = HR_STAGES.index(stage) if stage in HR_STAGES else 0
+    if stage_idx < len(HR_STAGES) - 1:
+        author = c.from_user.full_name if c.from_user else "—"
+        set_hr_stage(idx, HR_STAGES[stage_idx + 1], author)
+    await c.answer("Обновлено")
+    await route(c, f"hrc:{idx}")
+
+
+@dp.callback_query(F.data.startswith("hrdel:"))
+async def cb_hr_delete(c: CallbackQuery):
+    u = get_user(c.from_user.id)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    idx = int(c.data.split(":")[1])
+    ws(HR_WS).delete_rows(idx)
+    drop_cache(HR_WS)
+    await c.answer("Удалено")
+    await route(c, "hrc")
+
+
 @dp.callback_query(F.data.startswith("qd:"))
 async def cb_queue_doc(c: CallbackQuery):
     u = get_user(c.from_user.id)
@@ -1538,6 +1959,10 @@ ROUTES = [
     ("inv",   lambda cc: cb_invoices(cc)),
     ("wo:",   lambda cc: cb_writeoffs_loc(cc)),
     ("wo",    lambda cc: cb_writeoffs(cc)),
+    ("hrn:",  lambda cc: cb_hr_new_detail(cc)),
+    ("hrn",   lambda cc: cb_hr_new(cc)),
+    ("hrc:",  lambda cc: cb_hr_checklist_detail(cc)),
+    ("hrc",   lambda cc: cb_hr_checklist(cc)),
     ("d:",    lambda cc: cb_dept(cc)),
     ("l:",    lambda cc: cb_loc(cc)),
     ("mg:",   lambda cc: cb_menu_group(cc)),
