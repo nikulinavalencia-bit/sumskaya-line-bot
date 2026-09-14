@@ -472,6 +472,7 @@ def hr_doc_warning(r: dict) -> str:
 # ---------------- GMAIL: контракты/baja/cambio от Histora ----------------
 
 _gmail_access_token = {"token": "", "exp": 0}
+_gmail_auth_status = {"broken": False, "notified": False}
 
 
 def _gmail_get_access_token_sync() -> str:
@@ -488,13 +489,17 @@ def _gmail_get_access_token_sync() -> str:
         }, timeout=20)
         if r.status_code != 200:
             log.error("Не удалось обновить Gmail-токен: %s %s", r.status_code, r.text[:300])
+            _gmail_auth_status["broken"] = True
             return ""
         data = r.json()
         _gmail_access_token["token"] = data["access_token"]
         _gmail_access_token["exp"] = time() + int(data.get("expires_in", 3600))
+        _gmail_auth_status["broken"] = False
+        _gmail_auth_status["notified"] = False
         return _gmail_access_token["token"]
     except Exception as e:
         log.error("Ошибка получения Gmail-токена: %s", e)
+        _gmail_auth_status["broken"] = True
         return ""
 
 
@@ -612,6 +617,18 @@ async def gmail_watch_loop():
     while True:
         try:
             await notify_new_contracts()
+            if _gmail_auth_status["broken"] and not _gmail_auth_status["notified"]:
+                _gmail_auth_status["notified"] = True
+                for pid in patrons():
+                    try:
+                        await bot.send_message(
+                            pid,
+                            "⚠️ Доступ к почте (sl.valencia.resta@gmail.com) для проверки "
+                            "контрактов истёк — нужна повторная авторизация через OAuth "
+                            "Playground (та же процедура, что настраивали).",
+                        )
+                    except Exception:
+                        pass
         except Exception as e:
             log.error("Ошибка фоновой проверки почты: %s", e)
         await asyncio.sleep(GMAIL_CHECK_INTERVAL)
