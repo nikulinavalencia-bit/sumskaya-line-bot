@@ -1381,7 +1381,7 @@ async def on_private_photo(m: Message):
         pass
 
 
-@dp.message(F.text, F.chat.type == "private")
+@dp.message(F.chat.type == "private", lambda m: m.from_user.id in _awaiting_hr_input)
 async def on_private_text(m: Message):
     idx = _awaiting_hr_input.get(m.from_user.id)
     if not idx:
