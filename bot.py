@@ -399,12 +399,30 @@ def registro_ws():
     return sheets[0]
 
 
+def registro_header_row(w) -> int:
+    """Ищет реальную строку с названиями колонок среди первых 5 строк —
+    у Registro сверху есть баннер и групповые заголовки, настоящие имена
+    колонок не обязательно в самой первой строке."""
+    expected = {"iban", "sex", "horas", "domicilio", "puesto", "telefono",
+                "contrato", "departamento"}
+    values = w.get_values("A1:Z6")
+    best_row, best_score = 1, -1
+    for i, row in enumerate(values, start=1):
+        cells = {_norm(c) for c in row if c}
+        score = sum(1 for e in expected if any(e in c for c in cells))
+        if score > best_score:
+            best_row, best_score = i, score
+    return best_row
+
+
 def registro_append(values_by_header: dict):
     """Дописывает строку в Registro, сопоставляя значения с колонками ПО
     НАЗВАНИЮ (не по номеру) — устойчиво к тому, в каком порядке реально
-    стоят колонки в таблице."""
+    стоят колонки в таблице, и к тому, что настоящие заголовки не в первой
+    строке (сверху баннер/групповые шапки)."""
     w = registro_ws()
-    headers = w.row_values(1)
+    header_row = registro_header_row(w)
+    headers = w.row_values(header_row)
     row = []
     unmatched = dict(values_by_header)
     for h in headers:
@@ -415,7 +433,7 @@ def registro_append(values_by_header: dict):
                 val = unmatched.pop(key)
                 break
         row.append(val)
-    w.append_row(row, value_input_option="RAW")
+    w.append_row(row, value_input_option="USER_ENTERED")
     if unmatched:
         log.warning("В Registro не нашлось колонок для: %s", list(unmatched.keys()))
     return unmatched
@@ -1904,16 +1922,21 @@ async def on_private_text_registro(m: Message):
     if not idx:
         return
     parts = [p.strip() for p in m.text.strip().splitlines() if p.strip()]
-    if len(parts) < 5:
-        await m.answer("Нужно 5 строк (пол / departamento / дата / тип контракта / "
-                        "график). Попробуй ещё раз, каждое с новой строки.")
+    if len(parts) < 6:
+        await m.answer("Нужно 6 строк (пол / departamento / дата / тип контракта / "
+                        "график / ссылка на папку Диска). Попробуй ещё раз, каждое "
+                        "с новой строки.")
         return
-    sex, departamento, fecha_alta_raw, tipo_contrato, horario = parts[:5]
+    sex, departamento, fecha_alta_raw, tipo_contrato, horario, folder_link = parts[:6]
     if sex.strip().upper() not in ("M", "F"):
         await m.answer("Первая строка должна быть M или F. Попробуй ещё раз.")
         return
     if not parse_ddmmyyyy(fecha_alta_raw):
         await m.answer("Дата (3-я строка) не распознана, формат дд.мм.гггг. Попробуй ещё раз.")
+        return
+    if not folder_link.startswith("http"):
+        await m.answer("6-я строка должна быть ссылкой на папку Google Диска "
+                        "(начинается с http). Попробуй ещё раз.")
         return
 
     hr_data = rows(HR_WS, force=True)
@@ -1960,6 +1983,7 @@ async def on_private_text_registro(m: Message):
         "Domicilio": str(applicant.get("Domicilio", "")).strip(),
         "TIE/NIE": str(applicant.get("NIE/TIE", "")).strip(),
         "NIE/TIE": str(applicant.get("NIE/TIE", "")).strip(),
+        "Contrato": f'=HYPERLINK("{folder_link}"; "{full_name}")',
     }
 
     try:
@@ -2564,13 +2588,15 @@ async def cb_hr_next(c: CallbackQuery):
         await bot.send_message(
             c.from_user.id,
             f"Финальный этап для <b>{r.get('ФИО', '')}</b> — заполняю строку "
-            f"в Registro. Напиши 5 строк подряд:\n"
+            f"в Registro. Напиши 6 строк подряд:\n"
             f"1) Пол — M / F\n"
             f"2) Departamento (например Cocina, Barra, Managment)\n"
             f"3) Fecha de Alta — дд.мм.гггг\n"
             f"4) Tipo de contrato (например Indefinido, Temporal)\n"
-            f"5) Horario (например 40 h 9-17)\n\n"
-            f"Например:\n<code>M\nCocina\n15.09.2026\nIndefinido\n40 h 9-17</code>",
+            f"5) Horario (например 40 h 9-17)\n"
+            f"6) Ссылка на папку сотрудника на Google Диске\n\n"
+            f"Например:\n<code>M\nCocina\n15.09.2026\nIndefinido\n40 h 9-17\n"
+            f"https://drive.google.com/drive/folders/xxxxx</code>",
         )
         return
 
