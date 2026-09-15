@@ -58,6 +58,35 @@ GMAIL_CLIENT_SECRET = os.environ.get("GMAIL_CLIENT_SECRET", "")
 GMAIL_REFRESH_TOKEN = os.environ.get("GMAIL_REFRESH_TOKEN", "")
 GMAIL_ATTACHMENT_KEYWORDS = ("CONTRATO", "BAJA", "CAMBIO")
 GMAIL_CHECK_INTERVAL = 15 * 60  # секунд
+EMPLEADOS_CHAT_ID = os.environ.get("EMPLEADOS_CHAT_ID", "")
+SIGNING_HOURS = "11:00–16:00"
+
+# Ключевые фразы для автоматического распознавания типа заявки из группы
+# Empleados — без хэштегов, по смыслу текста сообщения.
+EMPLEADOS_CATEGORY_KEYWORDS = {
+    "Baja":      ["ultimo dia de trabajo", "último día de trabajo", "despido",
+                  "baja voluntaria", "finiquito", "causa baja"],
+    "Alta":      ["alta de su baja", "alta medica", "alta médica",
+                  "se reincorpora", "vuelve al trabajo", "fin de baja"],
+    "Jornada":   ["cambio de jornada", "jornada", "horario", "cambio de horas"],
+    "Categoria": ["categoria", "categoría", "cambio de puesto", "nuevo puesto"],
+    "Contrato":  ["contrato"],
+}
+EMPLEADOS_CATEGORY_EMOJI = {
+    "Baja": "🔴", "Alta": "🟢", "Jornada": "🕐", "Categoria": "🔁", "Contrato": "📄",
+}
+
+
+def classify_empleados_text(text: str) -> str:
+    t = _norm(text or "")
+    if not t:
+        return ""
+    scores = {}
+    for cat, kws in EMPLEADOS_CATEGORY_KEYWORDS.items():
+        for kw in kws:
+            if _norm(kw) in t:
+                scores[cat] = scores.get(cat, 0) + 1
+    return max(scores, key=scores.get) if scores else ""
 APPLICANTS_WS_NAME = os.environ.get("APPLICANTS_WS_NAME", "Form_Responses")
 
 COMPANY = "SUMSKAYA LINE SL"
@@ -220,6 +249,8 @@ PHOTOS_WS = "Photos"
 ARCHIVE_WS = "Archive"
 HR_WS = "HR"
 MAIL_WS = "MailContracts"
+EMPLOYEES_WS = "Employees"
+EMPLEADOS_REQ_WS = "EmpleadosRequests"
 
 HEADERS = {
     USERS_WS:   ["ID", "Имя", "Роль", "Отделы", "Статус", "Язык"],
@@ -237,6 +268,10 @@ HEADERS = {
                  "Статус", "Обновил", "Дата обновления",
                  "Срок документа", "Разрешение на работу"],
     MAIL_WS:    ["MessageID", "Дата", "От кого", "Тема", "Вложение"],
+    EMPLOYEES_WS: ["ФИО", "Локаль", "Должность", "Дата заявки",
+                   "Тип файла", "Имя файла", "GmailMsgID", "Дата добавления"],
+    EMPLEADOS_REQ_WS: ["Категория", "Текст", "Автор", "ChatID", "MessageID",
+                        "FileID", "Дата", "Статус"],
 }
 
 _cache = {}
@@ -385,14 +420,33 @@ def tracked_row_keys() -> set:
     return {str(r.get("RowKey")) for r in rows(HR_WS, force=True)}
 
 
-def new_applicants():
-    """Заявки из формы, ещё не добавленные в чек-лист HR."""
+def match_locale_code(text: str) -> str:
+    """Сопоставляет текст локали из анкеты (P&S Reina, Boi Boi Gran Via,
+    P&S Francia, P&S Bakery...) с нашим внутренним кодом локали."""
+    t = _norm(text)
+    if "reina" in t:
+        return "reina"
+    if "fransia" in t or "francia" in t:
+        return "fransia"
+    if "boi" in t:
+        return "boiboi"
+    if "panad" in t or "bakery" in t:
+        return "panaderia"
+    return ""
+
+
+def new_applicants(loc: str = None):
+    """Заявки из формы, ещё не добавленные в чек-лист HR. Можно отфильтровать
+    по локали (код из LOCALES)."""
     tracked = tracked_row_keys()
     out = []
     for idx, r in enumerate(applicants_rows(), start=2):
         key = str(idx)
-        if key not in tracked:
-            out.append((idx, r))
+        if key in tracked:
+            continue
+        if loc and match_locale_code(r.get("Local", "")) != loc:
+            continue
+        out.append((idx, r))
     return out
 
 
@@ -625,29 +679,106 @@ def mark_mail_seen(msg_id: str, date: str, sender: str, subject: str, attachment
     drop_cache(MAIL_WS)
 
 
+def extract_name_from_filename(filename: str) -> str:
+    """'Contrato Mark 12 09 2026.pdf' -> 'mark'. Убирает расширение, ключевые
+    слова (CONTRATO/BAJA/CAMBIO...) и числа/даты, оставляет только имя."""
+    base = re.sub(r"\.[a-zA-Z0-9]{2,5}$", "", filename)
+    words = re.findall(r"[A-Za-zА-Яа-яЁё]+", base)
+    skip = {"contrato", "baja", "cambio", "voluntaria", "carta", "nspp", "jornada"}
+    name_words = [w for w in words if w.lower() not in skip]
+    return " ".join(name_words).strip()
+
+
+def find_checklist_match(candidate_name: str):
+    """Ищет в чек-листе HR запись, чьё ФИО совпадает по словам с именем
+    из файла. Возвращает (row_idx, row) или (None, None)."""
+    cand_words = set(_norm(candidate_name).split())
+    if not cand_words:
+        return None, None
+    best, best_score = None, 0
+    for idx, r in enumerate(rows(HR_WS, force=True), start=2):
+        fio_words = set(_norm(str(r.get("ФИО", ""))).split())
+        if not fio_words:
+            continue
+        score = len(cand_words & fio_words)
+        if score > best_score and score >= 1:
+            best, best_score = (idx, r), score
+    return best if best else (None, None)
+
+
+def add_employee_card(r: dict, file_type: str, filename: str, gmail_msg_id: str):
+    now = now_local().strftime("%d.%m.%Y %H:%M")
+    ws(EMPLOYEES_WS).append_row([
+        str(r.get("ФИО", "")), str(r.get("Локаль", "")), str(r.get("Должность", "")),
+        str(r.get("Дата заявки", "")), file_type, filename, gmail_msg_id, now,
+    ], value_input_option="RAW")
+    drop_cache(EMPLOYEES_WS)
+
+
+async def notify_empleados(fio: str):
+    if not EMPLEADOS_CHAT_ID:
+        return
+    try:
+        await bot.send_message(
+            int(EMPLEADOS_CHAT_ID),
+            f"📄 Документы {fio} готовы — можно приходить подписывать, "
+            f"{SIGNING_HOURS}.",
+        )
+    except Exception as e:
+        log.error("Не удалось отправить в Empleados: %s", e)
+
+
 async def notify_new_contracts() -> int:
-    """Проверяет почту, шлёт патронам найденные новые письма с документами
-    (сам файл вложением), отмечает как показанные. Возвращает сколько нашли."""
+    """Проверяет почту. Для каждого нового письма пытается сопоставить вложение
+    с записью в чек-листе по имени — если находит, сама заводит карточку
+    сотрудника, продвигает этап и пишет в Empleados. Если не находит —
+    просто присылает файл патронам на ручную обработку."""
     found = await check_gmail_contracts()
     for item in found:
         names = ", ".join(fn for fn, _ in item["attachments"])
-        text = (f"📨 <b>Новый документ от Histora</b>\n"
-                f"От: {item['from']}\nТема: {item['subject']}\n"
-                f"Дата: {item['date']}\nВложение: {names}")
-        for pid in patrons():
-            try:
-                await bot.send_message(pid, text)
-            except Exception:
-                pass
+        matched_any = False
+
         for fn, aid in item["attachments"]:
             raw = await gmail_download_attachment(item["id"], aid)
             if not raw:
                 continue
-            for pid in patrons():
-                try:
-                    await bot.send_document(pid, BufferedInputFile(raw, filename=fn))
-                except Exception:
-                    pass
+            candidate = extract_name_from_filename(fn)
+            hr_idx, hr_row = find_checklist_match(candidate)
+            file_type = next((kw for kw in GMAIL_ATTACHMENT_KEYWORDS
+                               if kw.lower() in fn.lower()), "")
+
+            if hr_row:
+                matched_any = True
+                fio = str(hr_row.get("ФИО", ""))
+                add_employee_card(hr_row, file_type, fn, item["id"])
+                if file_type == "CONTRATO":
+                    set_hr_stage(hr_idx, "Контракт получен",
+                                 "Gmail (авто)")
+                for pid in patrons():
+                    try:
+                        await bot.send_message(
+                            pid,
+                            f"✅ Файл <b>{fn}</b> распознан и привязан к "
+                            f"<b>{fio}</b> — карточка сотрудника создана.")
+                        await bot.send_document(pid, BufferedInputFile(raw, filename=fn))
+                    except Exception:
+                        pass
+                if file_type == "CONTRATO":
+                    await notify_empleados(fio)
+            else:
+                for pid in patrons():
+                    try:
+                        await bot.send_message(
+                            pid,
+                            f"📨 <b>Новый документ от Histora</b>\n"
+                            f"От: {item['from']}\nТема: {item['subject']}\n"
+                            f"Дата: {item['date']}\nВложение: {fn}\n\n"
+                            f"⚠️ Не удалось автоматически определить, к кому "
+                            f"относится — привяжи вручную.")
+                        await bot.send_document(pid, BufferedInputFile(raw, filename=fn))
+                    except Exception:
+                        pass
+
         mark_mail_seen(item["id"], item["date"], item["from"], item["subject"], names)
     return len(found)
 
@@ -1303,6 +1434,65 @@ async def cmd_chatid(m: Message):
     await m.answer(f"ChatID: <code>{m.chat.id}</code>\nТип: {m.chat.type}")
 
 
+def save_empleados_request(category, text, author, chat_id, msg_id, file_id) -> int:
+    now = now_local()
+    w = ws(EMPLEADOS_REQ_WS)
+    w.append_row([
+        category, (text or "")[:2000], author, str(chat_id), str(msg_id),
+        file_id or "", now.strftime("%d.%m.%Y %H:%M"), "новый",
+    ], value_input_option="RAW")
+    drop_cache(EMPLEADOS_REQ_WS)
+    return len(w.col_values(1))
+
+
+if EMPLEADOS_CHAT_ID:
+    @dp.message(F.chat.id == int(EMPLEADOS_CHAT_ID),
+                lambda m: not (m.text and m.text.startswith("/")))
+    async def empleados_intake(m: Message):
+        text = m.caption or m.text or ""
+        file_id = None
+        if m.photo:
+            file_id = m.photo[-1].file_id
+        elif m.document:
+            file_id = m.document.file_id
+
+        if doc_already_saved(m.chat.id, m.message_id):
+            return
+
+        category = classify_empleados_text(text)
+        author = m.from_user.full_name if m.from_user else "—"
+
+        if not category:
+            # не смогли распознать — покажем патронам как есть, без папки
+            for pid in patrons():
+                try:
+                    await bot.send_message(
+                        pid,
+                        f"❔ <b>Не удалось определить тип заявки</b>\n"
+                        f"От: {author}\n\n{text[:600] or '(без текста)'}")
+                    if file_id:
+                        await bot.forward_message(pid, m.chat.id, m.message_id)
+                except Exception:
+                    pass
+            return
+
+        row_idx = save_empleados_request(category, text, author, m.chat.id,
+                                          m.message_id, file_id)
+        _seen_msgs.add((str(m.chat.id), str(m.message_id)))
+        emoji = EMPLEADOS_CATEGORY_EMOJI.get(category, "📌")
+        for pid in patrons():
+            try:
+                await bot.send_message(
+                    pid,
+                    f"{emoji} <b>{category}</b>\nОт: {author}\n\n"
+                    f"<code>{text[:1000]}</code>\n\n"
+                    f"Сохранено — HR → Заявки сотрудников → {category}")
+                if file_id:
+                    await bot.forward_message(pid, m.chat.id, m.message_id)
+            except Exception:
+                pass
+
+
 @dp.message(F.chat.type.in_({"group", "supergroup"}),
             lambda m: not (m.text and m.text.startswith("/")))
 async def group_intake(m: Message):
@@ -1410,7 +1600,12 @@ async def cb_dept(c: CallbackQuery):
             if n_warn:
                 label = f"⚠️ {label} — {n_warn} с проблемой"
             kb.append([InlineKeyboardButton(text=label, callback_data="hrc")])
+            kb.append([InlineKeyboardButton(
+                text=f"👤 Сотрудники ({len(rows(EMPLOYEES_WS))})", callback_data="hre")])
             kb.append([InlineKeyboardButton(text="📧 Проверить почту на контракты", callback_data="hrmail")])
+            n_req = sum(1 for r in rows(EMPLEADOS_REQ_WS) if str(r.get("Статус")).strip() == "новый")
+            kb.append([InlineKeyboardButton(
+                text=f"📨 Заявки сотрудников ({n_req})", callback_data="hrq")])
         kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
         await take_over(c, f"{crumb(dept, lang)}", InlineKeyboardMarkup(inline_keyboard=kb))
         await c.answer()
@@ -1869,27 +2064,46 @@ async def cb_hr_new(c: CallbackQuery):
         return
     lang = ulang(u)
     nav_push(c.from_user.id, c.data)
-    items = new_applicants()
-    title = "🆕 <b>Новые заявки</b>"
+    kb = []
+    for code, L in LOCALES.items():
+        n = len(new_applicants(loc=code))
+        kb.append([InlineKeyboardButton(
+            text=f"{L['emoji']} {L['name']} ({n})", callback_data=f"hrn:{code}")])
+    kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
+    await take_over(c, "🆕 <b>Новые заявки</b>\n\n" + t("choose_locale", lang),
+                    InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("hrn:"))
+async def cb_hr_new_loc(c: CallbackQuery):
+    u = guard(c)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    lang = ulang(u)
+    nav_push(c.from_user.id, c.data)
+    loc = c.data.split(":")[1]
+    L = LOCALES.get(loc, {})
+    items = new_applicants(loc=loc)
+    title = f"🆕 <b>Новые заявки</b> · {L.get('emoji', '')} {L.get('name', loc)}"
     if not items:
         text = f"{title}\n\nНовых заявок нет."
-        kb = [[InlineKeyboardButton(text=t("refresh", lang), callback_data="hrn")],
+        kb = [[InlineKeyboardButton(text=t("refresh", lang), callback_data=c.data)],
               [InlineKeyboardButton(text=t("back", lang), callback_data="bk")]]
     else:
         text = f"{title} — {len(items)}"
         kb = []
         for idx, r in items[:40]:
             name = f"{r.get('Nombre', '')} {r.get('Apellido', '')}".strip()
-            local = str(r.get("Local", "")).strip()
-            label = f"{name} · {local}" if local else name
-            kb.append([InlineKeyboardButton(text=label[:60], callback_data=f"hrn:{idx}")])
-        kb.append([InlineKeyboardButton(text=t("refresh", lang), callback_data="hrn")])
+            kb.append([InlineKeyboardButton(text=name[:60], callback_data=f"hrnd:{idx}")])
+        kb.append([InlineKeyboardButton(text=t("refresh", lang), callback_data=c.data)])
         kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
     await take_over(c, text, InlineKeyboardMarkup(inline_keyboard=kb))
     await c.answer()
 
 
-@dp.callback_query(F.data.startswith("hrn:"))
+@dp.callback_query(F.data.startswith("hrnd:"))
 async def cb_hr_new_detail(c: CallbackQuery):
     u = guard(c)
     if not is_patron(u):
@@ -1935,7 +2149,155 @@ async def cb_hr_add(c: CallbackQuery):
     author = c.from_user.full_name if c.from_user else "—"
     add_to_hr_checklist(idx, r, author)
     await c.answer("Добавлено в чек-лист ✅", show_alert=True)
-    await route(c, "hrn")
+    loc = match_locale_code(r.get("Local", ""))
+    await route(c, f"hrn:{loc}" if loc else "hrn")
+
+
+@dp.callback_query(F.data == "hre")
+async def cb_hr_employees(c: CallbackQuery):
+    u = guard(c)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    lang = ulang(u)
+    nav_push(c.from_user.id, c.data)
+    items = list(enumerate(rows(EMPLOYEES_WS, force=True), start=2))
+    title = "👤 <b>Сотрудники</b>"
+    if not items:
+        text = f"{title}\n\nПусто."
+        kb = [[InlineKeyboardButton(text=t("refresh", lang), callback_data="hre")],
+              [InlineKeyboardButton(text=t("back", lang), callback_data="bk")]]
+    else:
+        text = f"{title} — {len(items)}"
+        kb = []
+        for idx, r in items:
+            fio = str(r.get("ФИО", "")).strip()
+            loc = str(r.get("Локаль", "")).strip()
+            kb.append([InlineKeyboardButton(text=f"{fio} · {loc}"[:60], callback_data=f"hre:{idx}")])
+        kb.append([InlineKeyboardButton(text=t("refresh", lang), callback_data="hre")])
+        kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
+    await take_over(c, text, InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("hre:"))
+async def cb_hr_employee_detail(c: CallbackQuery):
+    u = guard(c)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    nav_push(c.from_user.id, c.data)
+    idx = int(c.data.split(":")[1])
+    data = rows(EMPLOYEES_WS, force=True)
+    try:
+        r = data[idx - 2]
+    except IndexError:
+        await c.answer("—", show_alert=True)
+        return
+    text = (f"👤 <b>{r.get('ФИО', '')}</b>\n"
+            f"{r.get('Локаль', '')} · {r.get('Должность', '')}\n\n"
+            f"Заявка от: {r.get('Дата заявки', '')}\n"
+            f"Файл: {r.get('Тип файла', '')} — {r.get('Имя файла', '')}\n"
+            f"Добавлено: {r.get('Дата добавления', '')}")
+    kb = [[InlineKeyboardButton(text=t("back", ulang(u)), callback_data="bk")]]
+    await take_over(c, text, InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.answer()
+
+
+def pending_empleados_requests(category: str = None):
+    out = []
+    for idx, r in enumerate(rows(EMPLEADOS_REQ_WS, force=True), start=2):
+        if str(r.get("Статус")).strip() != "новый":
+            continue
+        if category and str(r.get("Категория")).strip() != category:
+            continue
+        out.append((idx, r))
+    return out
+
+
+@dp.callback_query(F.data == "hrq")
+async def cb_hr_requests(c: CallbackQuery):
+    u = guard(c)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    lang = ulang(u)
+    nav_push(c.from_user.id, c.data)
+    kb = []
+    for cat in EMPLEADOS_CATEGORY_KEYWORDS:
+        n = len(pending_empleados_requests(cat))
+        emoji = EMPLEADOS_CATEGORY_EMOJI.get(cat, "📌")
+        kb.append([InlineKeyboardButton(text=f"{emoji} {cat} ({n})", callback_data=f"hrq:{cat}")])
+    kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
+    await take_over(c, "📨 <b>Заявки сотрудников</b>\n\nВыберите папку:",
+                    InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("hrq:"))
+async def cb_hr_requests_cat(c: CallbackQuery):
+    u = guard(c)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    lang = ulang(u)
+    nav_push(c.from_user.id, c.data)
+    cat = c.data.split(":", 1)[1]
+    emoji = EMPLEADOS_CATEGORY_EMOJI.get(cat, "📌")
+    items = pending_empleados_requests(cat)
+    title = f"{emoji} <b>{cat}</b>"
+    if not items:
+        text = f"{title}\n\nПусто."
+        kb = [[InlineKeyboardButton(text=t("refresh", lang), callback_data=c.data)],
+              [InlineKeyboardButton(text=t("back", lang), callback_data="bk")]]
+    else:
+        text = f"{title} — {len(items)}"
+        kb = []
+        for idx, r in items[:40]:
+            label = f"{r.get('Автор', '')} · {r.get('Дата', '')}"
+            kb.append([InlineKeyboardButton(text=label[:60], callback_data=f"hrqd:{idx}")])
+        kb.append([InlineKeyboardButton(text=t("refresh", lang), callback_data=c.data)])
+        kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
+    await take_over(c, text, InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("hrqd:"))
+async def cb_hr_requests_detail(c: CallbackQuery):
+    u = guard(c)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    nav_push(c.from_user.id, c.data)
+    idx = int(c.data.split(":")[1])
+    data = rows(EMPLEADOS_REQ_WS, force=True)
+    try:
+        r = data[idx - 2]
+    except IndexError:
+        await c.answer("—", show_alert=True)
+        return
+    cat = str(r.get("Категория", ""))
+    emoji = EMPLEADOS_CATEGORY_EMOJI.get(cat, "📌")
+    text = (f"{emoji} <b>{cat}</b>\nОт: {r.get('Автор', '')}\n{r.get('Дата', '')}\n\n"
+            f"<code>{str(r.get('Текст', ''))[:1000]}</code>")
+    kb = [[InlineKeyboardButton(text="✅ Обработано", callback_data=f"hrqok:{idx}")],
+          [InlineKeyboardButton(text=t("back", ulang(u)), callback_data="bk")]]
+    fid = str(r.get("FileID") or "").strip() or None
+    await take_over(c, text, InlineKeyboardMarkup(inline_keyboard=kb), photo=fid)
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("hrqok:"))
+async def cb_hr_requests_done(c: CallbackQuery):
+    u = get_user(c.from_user.id)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    idx = int(c.data.split(":")[1])
+    ws(EMPLEADOS_REQ_WS).update_cell(idx, 8, "обработано")
+    drop_cache(EMPLEADOS_REQ_WS)
+    await c.answer("Отмечено ✅")
+    await nav_back(c)
 
 
 @dp.callback_query(F.data == "hrmail")
@@ -2251,10 +2613,16 @@ ROUTES = [
     ("inv",   lambda cc: cb_invoices(cc)),
     ("wo:",   lambda cc: cb_writeoffs_loc(cc)),
     ("wo",    lambda cc: cb_writeoffs(cc)),
-    ("hrn:",  lambda cc: cb_hr_new_detail(cc)),
+    ("hrn:",  lambda cc: cb_hr_new_loc(cc)),
+    ("hrnd:", lambda cc: cb_hr_new_detail(cc)),
     ("hrn",   lambda cc: cb_hr_new(cc)),
     ("hrc:",  lambda cc: cb_hr_checklist_detail(cc)),
     ("hrc",   lambda cc: cb_hr_checklist(cc)),
+    ("hre:",  lambda cc: cb_hr_employee_detail(cc)),
+    ("hre",   lambda cc: cb_hr_employees(cc)),
+    ("hrq:",  lambda cc: cb_hr_requests_cat(cc)),
+    ("hrqd:", lambda cc: cb_hr_requests_detail(cc)),
+    ("hrq",   lambda cc: cb_hr_requests(cc)),
     ("d:",    lambda cc: cb_dept(cc)),
     ("l:",    lambda cc: cb_loc(cc)),
     ("mg:",   lambda cc: cb_menu_group(cc)),
