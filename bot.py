@@ -479,6 +479,7 @@ def _gmail_get_access_token_sync() -> str:
     if _gmail_access_token["token"] and time() < _gmail_access_token["exp"] - 60:
         return _gmail_access_token["token"]
     if not (GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET and GMAIL_REFRESH_TOKEN):
+        log.warning("Gmail: не заданы GMAIL_CLIENT_ID/SECRET/REFRESH_TOKEN — пропускаю")
         return ""
     try:
         r = requests.post("https://oauth2.googleapis.com/token", data={
