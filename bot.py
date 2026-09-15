@@ -50,6 +50,8 @@ BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "")
 SMTP_USER = os.environ.get("SMTP_USER", "")          # адрес-отправитель (должен быть подтверждён в Brevo)
 BILLZ_EMAIL = os.environ.get("BILLZ_EMAIL", "sa@bilz.ai")
 APPLICANTS_SHEET_ID = os.environ.get("APPLICANTS_SHEET_ID", "1WvQz7v3hu31Rw4JSXeQXszK4RY9t5FYSDo2ok1CrTF4")
+REGISTRO_SHEET_ID = os.environ.get("REGISTRO_SHEET_ID", "1JRjfjCH4_LDuU78EqIbjbCKWXKvx3D13LUA84o4uVds")
+REGISTRO_WS_NAME = os.environ.get("REGISTRO_WS_NAME", "Registro")
 
 # Gmail API — читаем почту sl.valencia.resta@gmail.com на предмет готовых
 # контрактов/баха/камбио от Histora (по имени вложения).
@@ -380,6 +382,45 @@ def applicants_ws():
     return sheets[0]
 
 
+_registro_sh = None
+
+
+def registro_ws():
+    global _registro_sh
+    if _registro_sh is None:
+        _registro_sh = _gc.open_by_key(REGISTRO_SHEET_ID)
+    sheets = _registro_sh.worksheets()
+    target = _norm(REGISTRO_WS_NAME)
+    for w in sheets:
+        if _norm(w.title) == target:
+            return w
+    log.warning("лист '%s' не найден в таблице Registro, использую '%s'",
+                REGISTRO_WS_NAME, sheets[0].title)
+    return sheets[0]
+
+
+def registro_append(values_by_header: dict):
+    """Дописывает строку в Registro, сопоставляя значения с колонками ПО
+    НАЗВАНИЮ (не по номеру) — устойчиво к тому, в каком порядке реально
+    стоят колонки в таблице."""
+    w = registro_ws()
+    headers = w.row_values(1)
+    row = []
+    unmatched = dict(values_by_header)
+    for h in headers:
+        h_norm = _norm(h)
+        val = ""
+        for key in list(unmatched.keys()):
+            if _norm(key) == h_norm:
+                val = unmatched.pop(key)
+                break
+        row.append(val)
+    w.append_row(row, value_input_option="RAW")
+    if unmatched:
+        log.warning("В Registro не нашлось колонок для: %s", list(unmatched.keys()))
+    return unmatched
+
+
 def applicants_rows(force=False):
     ts, data = _cache.get("applicants", (0, []))
     if force or time() - ts > CACHE_TTL:
@@ -407,9 +448,7 @@ def applicants_rows(force=False):
 HR_STAGES = [
     "Заявка получена",
     "Отправлено в Histora",
-    "Контракт получен",
-    "Проверен",
-    "Отправлено на подпись",
+    "Контракт получен, отправлено на подпись",
     "Подписано",
     "Заведено в Control Laboral",
     "Активен",
@@ -752,7 +791,7 @@ async def notify_new_contracts() -> int:
                 fio = str(hr_row.get("ФИО", ""))
                 add_employee_card(hr_row, file_type, fn, item["id"])
                 if file_type == "CONTRATO":
-                    set_hr_stage(hr_idx, "Контракт получен",
+                    set_hr_stage(hr_idx, "Контракт получен, отправлено на подпись",
                                  "Gmail (авто)")
                 for pid in patrons():
                     try:
@@ -1203,6 +1242,7 @@ def save_photo(dish: str, file_id: str, who: str):
 # кто сейчас загружает фото: uid -> название блюда
 _awaiting_photo = {}
 _awaiting_hr_input = {}  # user_id -> hr_row_idx: ждём от патрона срок документа + разрешение
+_awaiting_registro_input = {}  # user_id -> hr_row_idx: ждём поля для таблицы Registro
 
 
 def nc(v, nd=2) -> str:
@@ -1858,6 +1898,86 @@ async def on_private_text(m: Message):
     await m.answer("Сохранено ✅")
 
 
+@dp.message(F.chat.type == "private", lambda m: m.from_user.id in _awaiting_registro_input)
+async def on_private_text_registro(m: Message):
+    idx = _awaiting_registro_input.get(m.from_user.id)
+    if not idx:
+        return
+    parts = [p.strip() for p in m.text.strip().splitlines() if p.strip()]
+    if len(parts) < 5:
+        await m.answer("Нужно 5 строк (пол / departamento / дата / тип контракта / "
+                        "график). Попробуй ещё раз, каждое с новой строки.")
+        return
+    sex, departamento, fecha_alta_raw, tipo_contrato, horario = parts[:5]
+    if sex.strip().upper() not in ("M", "F"):
+        await m.answer("Первая строка должна быть M или F. Попробуй ещё раз.")
+        return
+    if not parse_ddmmyyyy(fecha_alta_raw):
+        await m.answer("Дата (3-я строка) не распознана, формат дд.мм.гггг. Попробуй ещё раз.")
+        return
+
+    hr_data = rows(HR_WS, force=True)
+    try:
+        hr_row = hr_data[idx - 2]
+    except IndexError:
+        await m.answer("Не нашла эту запись в чек-листе — возможно, её удалили.")
+        _awaiting_registro_input.pop(m.from_user.id, None)
+        return
+
+    row_key = str(hr_row.get("RowKey", "")).strip()
+    applicant = {}
+    try:
+        applicant = applicants_rows()[int(row_key) - 2]
+    except Exception:
+        pass
+
+    nombre = str(applicant.get("Nombre", "")).strip()
+    apellido = str(applicant.get("Apellido", "")).strip()
+    full_name = f"{nombre} {apellido}".strip() or str(hr_row.get("ФИО", ""))
+    loc_code = match_locale_code(str(hr_row.get("Локаль", "")))
+    loc_label = LOCALES.get(loc_code, {}).get("tag", str(hr_row.get("Локаль", "")))
+
+    values = {
+        "Nombre y Apellidos": full_name,
+        "Nombre": nombre,
+        "Apellido": apellido,
+        "Sex": sex.strip().upper(),
+        "Local": loc_label,
+        "local": loc_label,
+        "Horas": str(applicant.get("Número de horas bajo contrato", "")).strip(),
+        "Departamento": departamento,
+        "Puesto": str(hr_row.get("Должность", "")).strip(),
+        "Fecha de Alta": fecha_alta_raw,
+        "Tipo de contrato": tipo_contrato,
+        "Horario": horario,
+        "IBAN": str(applicant.get("IBAN", "")).strip(),
+        "Fecha Nacimiento": str(applicant.get("Fecha de nacimiento", "")).strip(),
+        "Fecha de nacimiento": str(applicant.get("Fecha de nacimiento", "")).strip(),
+        "Dirección e-mail": str(applicant.get("Correo electrónico", "")).strip(),
+        "Correo electrónico": str(applicant.get("Correo electrónico", "")).strip(),
+        "Teléfono Móvil": str(applicant.get("Teléfono", "")).strip(),
+        "Teléfono": str(applicant.get("Teléfono", "")).strip(),
+        "Domicilio": str(applicant.get("Domicilio", "")).strip(),
+        "TIE/NIE": str(applicant.get("NIE/TIE", "")).strip(),
+        "NIE/TIE": str(applicant.get("NIE/TIE", "")).strip(),
+    }
+
+    try:
+        unmatched = registro_append(values)
+    except Exception as e:
+        log.error("Ошибка записи в Registro: %s", e)
+        await m.answer(f"⚠️ Не удалось записать в Registro: {type(e).__name__}: {e}")
+        return
+
+    _awaiting_registro_input.pop(m.from_user.id, None)
+    author = m.from_user.full_name if m.from_user else "—"
+    set_hr_stage(idx, HR_STAGES[-1], author)
+    note = "Записано в Registro ✅"
+    if unmatched:
+        note += f"\n(не нашли колонки: {', '.join(unmatched.keys())})"
+    await m.answer(note)
+
+
 @dp.callback_query(F.data.startswith("tk:"))
 async def cb_tech(c: CallbackQuery):
     u = guard(c)
@@ -2433,9 +2553,29 @@ async def cb_hr_next(c: CallbackQuery):
         return
     stage = str(r.get("Статус", "")).strip()
     stage_idx = HR_STAGES.index(stage) if stage in HR_STAGES else 0
-    if stage_idx < len(HR_STAGES) - 1:
-        author = c.from_user.full_name if c.from_user else "—"
-        set_hr_stage(idx, HR_STAGES[stage_idx + 1], author)
+    if stage_idx >= len(HR_STAGES) - 1:
+        await c.answer("Уже финальный этап")
+        return
+    next_stage = HR_STAGES[stage_idx + 1]
+
+    if next_stage == HR_STAGES[-1]:  # "Активен" — перед этим соберём Registro
+        _awaiting_registro_input[c.from_user.id] = idx
+        await c.answer()
+        await bot.send_message(
+            c.from_user.id,
+            f"Финальный этап для <b>{r.get('ФИО', '')}</b> — заполняю строку "
+            f"в Registro. Напиши 5 строк подряд:\n"
+            f"1) Пол — M / F\n"
+            f"2) Departamento (например Cocina, Barra, Managment)\n"
+            f"3) Fecha de Alta — дд.мм.гггг\n"
+            f"4) Tipo de contrato (например Indefinido, Temporal)\n"
+            f"5) Horario (например 40 h 9-17)\n\n"
+            f"Например:\n<code>M\nCocina\n15.09.2026\nIndefinido\n40 h 9-17</code>",
+        )
+        return
+
+    author = c.from_user.full_name if c.from_user else "—"
+    set_hr_stage(idx, next_stage, author)
     await c.answer("Обновлено")
     await route(c, f"hrc:{idx}")
 
