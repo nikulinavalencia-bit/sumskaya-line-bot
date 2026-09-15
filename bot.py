@@ -241,6 +241,22 @@ def _open_sheet_with_retry(gc, sheet_id, attempts=5, delay=20):
 
 _sh = _open_sheet_with_retry(_gc, SHEET_ID)
 
+
+def sheets_write_retry(fn, *args, attempts=3, delay=8, **kwargs):
+    """Оборачивает функцию записи в таблицу — при 429 (лимит) ждёт и
+    повторяет, вместо того чтобы ронять всю пачку обработки."""
+    last_exc = None
+    for i in range(attempts):
+        try:
+            return fn(*args, **kwargs)
+        except gspread.exceptions.APIError as e:
+            if "429" not in str(e):
+                raise
+            last_exc = e
+            log.warning("Sheets API 429 при записи (попытка %s/%s): %s", i + 1, attempts, e)
+            time_module.sleep(delay * (i + 1))
+    raise last_exc
+
 USERS_WS = "Users"
 CONTENT_WS = "Content"
 GROUPS_WS = "Groups"
@@ -834,10 +850,11 @@ async def notify_new_contracts() -> int:
             if hr_row:
                 matched_any = True
                 fio = str(hr_row.get("ФИО", ""))
-                add_employee_card(hr_row, file_type, fn, item["id"])
+                sheets_write_retry(add_employee_card, hr_row, file_type, fn, item["id"])
                 if file_type == "CONTRATO":
-                    set_hr_stage(hr_idx, "Контракт получен, отправлено на подпись",
-                                 "Gmail (авто)")
+                    sheets_write_retry(set_hr_stage, hr_idx,
+                                        "Контракт получен, отправлено на подпись",
+                                        "Gmail (авто)")
                 for pid in patrons():
                     try:
                         await bot.send_message(
@@ -865,7 +882,9 @@ async def notify_new_contracts() -> int:
                         log.error("Не удалось уведомить patron %s о нераспознанном письме %s: %s",
                                   pid, fn, e)
 
-        mark_mail_seen(item["id"], item["date"], item["from"], item["subject"], names)
+        sheets_write_retry(mark_mail_seen, item["id"], item["date"], item["from"],
+                            item["subject"], names)
+        await asyncio.sleep(2)  # не жечь лимит записи Google при пачке писем разом
     return len(found)
 
 
