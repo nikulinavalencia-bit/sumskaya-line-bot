@@ -4,6 +4,7 @@
 # =========================================================
 
 import os
+import html as html_lib
 import json
 import asyncio
 import logging
@@ -811,7 +812,7 @@ async def notify_empleados(fio: str):
     try:
         await bot.send_message(
             int(EMPLEADOS_CHAT_ID),
-            f"📄 Los documentos de {fio} ya están listos — puede pasar a "
+            f"📄 Los documentos de {html_lib.escape(fio)} ya están listos — puede pasar a "
             f"firmarlos, de {SIGNING_HOURS}.",
         )
     except Exception as e:
@@ -825,10 +826,13 @@ async def notify_new_contracts() -> int:
     просто присылает файл патронам на ручную обработку."""
     found = await check_gmail_contracts()
     for item in found:
+        item_from = html_lib.escape(item.get("from", ""))
+        item_subject = html_lib.escape(item.get("subject", ""))
         names = ", ".join(fn for fn, _ in item["attachments"])
         matched_any = False
 
         for fn, aid in item["attachments"]:
+            fn_esc = html_lib.escape(fn)
             raw = await gmail_download_attachment(item["id"], aid)
             if not raw:
                 log.error("Не удалось скачать вложение '%s' из письма %s", fn, item["id"])
@@ -837,8 +841,8 @@ async def notify_new_contracts() -> int:
                         await bot.send_message(
                             pid,
                             f"⚠️ <b>Не удалось скачать вложение</b>\n"
-                            f"От: {item['from']}\nТема: {item['subject']}\n"
-                            f"Файл: {fn}\n\nПосмотри это письмо в почте вручную.")
+                            f"От: {item_from}\nТема: {item_subject}\n"
+                            f"Файл: {fn_esc}\n\nПосмотри это письмо в почте вручную.")
                     except Exception:
                         pass
                 continue
@@ -850,6 +854,7 @@ async def notify_new_contracts() -> int:
             if hr_row:
                 matched_any = True
                 fio = str(hr_row.get("ФИО", ""))
+                fio_esc = html_lib.escape(fio)
                 sheets_write_retry(add_employee_card, hr_row, file_type, fn, item["id"])
                 if file_type == "CONTRATO":
                     sheets_write_retry(set_hr_stage, hr_idx,
@@ -859,8 +864,8 @@ async def notify_new_contracts() -> int:
                     try:
                         await bot.send_message(
                             pid,
-                            f"✅ Файл <b>{fn}</b> распознан и привязан к "
-                            f"<b>{fio}</b> — карточка сотрудника создана.")
+                            f"✅ Файл <b>{fn_esc}</b> распознан и привязан к "
+                            f"<b>{fio_esc}</b> — карточка сотрудника создана.")
                         await bot.send_document(pid, BufferedInputFile(raw, filename=fn))
                     except Exception as e:
                         log.error("Не удалось уведомить patron %s о найденном контракте %s: %s",
@@ -868,13 +873,14 @@ async def notify_new_contracts() -> int:
                 if file_type == "CONTRATO":
                     await notify_empleados(fio)
             else:
+                item_date = html_lib.escape(item.get("date", ""))
                 for pid in patrons():
                     try:
                         await bot.send_message(
                             pid,
                             f"📨 <b>Новый документ от Histora</b>\n"
-                            f"От: {item['from']}\nТема: {item['subject']}\n"
-                            f"Дата: {item['date']}\nВложение: {fn}\n\n"
+                            f"От: {item_from}\nТема: {item_subject}\n"
+                            f"Дата: {item_date}\nВложение: {fn_esc}\n\n"
                             f"⚠️ Не удалось автоматически определить, к кому "
                             f"относится — привяжи вручную.")
                         await bot.send_document(pid, BufferedInputFile(raw, filename=fn))
