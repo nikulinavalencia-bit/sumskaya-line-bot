@@ -612,7 +612,21 @@ async def notify_new_contracts() -> int:
     return len(found)
 
 
-async def gmail_watch_loop():
+def _gmail_diag_sync():
+    """Диагностика: сколько писем Gmail вообще находит по поисковому запросу
+    (до фильтрации по вложениям) — помогает понять, где рвётся цепочка."""
+    token = _gmail_get_access_token_sync()
+    if not token:
+        return {"auth_ok": False, "count": 0}
+    q = " OR ".join(f"filename:{kw}" for kw in GMAIL_ATTACHMENT_KEYWORDS)
+    data = _gmail_api_get_sync("messages", {"q": q, "maxResults": 20})
+    if data is None:
+        return {"auth_ok": False, "count": 0}
+    return {"auth_ok": True, "count": len(data.get("messages", []))}
+
+
+async def gmail_diag():
+    return await asyncio.to_thread(_gmail_diag_sync)
     """Фоновая задача — проверяет почту каждые GMAIL_CHECK_INTERVAL секунд."""
     while True:
         try:
@@ -1871,7 +1885,26 @@ async def cb_hr_mail_check(c: CallbackQuery):
     await c.answer("Проверяю почту…")
     n = await notify_new_contracts()
     if n == 0:
-        await bot.send_message(c.from_user.id, "Новых писем с документами не найдено.")
+        diag = await gmail_diag()
+        if not diag["auth_ok"]:
+            await bot.send_message(
+                c.from_user.id,
+                "⚠️ Не удалось подключиться к почте — доступ не работает "
+                "(нужна повторная авторизация через OAuth Playground).",
+            )
+        elif diag["count"] == 0:
+            await bot.send_message(
+                c.from_user.id,
+                "Почта проверена — Gmail не нашёл ни одного письма с вложением, "
+                "где в имени файла есть CONTRATO / BAJA / CAMBIO.",
+            )
+        else:
+            await bot.send_message(
+                c.from_user.id,
+                f"Почта проверена — Gmail нашёл {diag['count']} подходящих писем, "
+                "но все они уже были показаны раньше (или проблема в имени вложения "
+                "внутри письма — сверю ещё раз, если пришлёшь пример темы письма).",
+            )
 
 
 @dp.callback_query(F.data == "hrc")
