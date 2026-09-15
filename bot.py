@@ -11,6 +11,7 @@ import requests
 import base64
 import re
 from time import time
+import time as time_module
 from datetime import datetime
 
 import gspread
@@ -183,7 +184,24 @@ def role_name(role: str, lang: str) -> str:
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 _gc = gspread.authorize(Credentials.from_service_account_info(GOOGLE_CREDS, scopes=SCOPES))
-_sh = _gc.open_by_key(SHEET_ID)
+
+
+def _open_sheet_with_retry(gc, sheet_id, attempts=4, delay=5):
+    """При старте иногда ловим 429 (лимит Google API) из-за частых рестартов —
+    пробуем ещё раз вместо мгновенного краша всего процесса."""
+    last_exc = None
+    for i in range(attempts):
+        try:
+            return gc.open_by_key(sheet_id)
+        except gspread.exceptions.APIError as e:
+            last_exc = e
+            log.warning("Sheets API недоступен при старте (попытка %s/%s): %s",
+                        i + 1, attempts, e)
+            time_module.sleep(delay * (i + 1))
+    raise last_exc
+
+
+_sh = _open_sheet_with_retry(_gc, SHEET_ID)
 
 USERS_WS = "Users"
 CONTENT_WS = "Content"
