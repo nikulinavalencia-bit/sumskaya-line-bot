@@ -686,16 +686,33 @@ def _walk_gmail_parts(payload: dict):
     return out
 
 
+def _gmail_search_all_messages(q: str, max_total: int = 200):
+    """Собирает ID писем по запросу со всех страниц (Gmail отдаёт максимум
+    ~100-500 за раз, а без постраничного обхода можно потерять письма,
+    если их накопилось больше одной страницы)."""
+    ids = []
+    page_token = None
+    while len(ids) < max_total:
+        params = {"q": q, "maxResults": 100}
+        if page_token:
+            params["pageToken"] = page_token
+        data = _gmail_api_get_sync("messages", params)
+        if not data:
+            break
+        ids.extend(m["id"] for m in data.get("messages", []))
+        page_token = data.get("nextPageToken")
+        if not page_token:
+            break
+    return ids[:max_total]
+
+
 def _check_gmail_contracts_sync():
     """Синхронная (блокирующая) проверка почты — вызывается через to_thread."""
     seen = {str(r.get("MessageID")) for r in rows(MAIL_WS, force=True)}
     q = " OR ".join(f"filename:{kw}" for kw in GMAIL_ATTACHMENT_KEYWORDS)
-    data = _gmail_api_get_sync("messages", {"q": q, "maxResults": 20})
-    if not data:
-        return []
+    ids = _gmail_search_all_messages(q)
     found = []
-    for m in data.get("messages", []):
-        mid = m["id"]
+    for mid in ids:
         if mid in seen:
             continue
         msg = _gmail_api_get_sync(f"messages/{mid}", {"format": "full"})
@@ -798,6 +815,16 @@ async def notify_new_contracts() -> int:
         for fn, aid in item["attachments"]:
             raw = await gmail_download_attachment(item["id"], aid)
             if not raw:
+                log.error("Не удалось скачать вложение '%s' из письма %s", fn, item["id"])
+                for pid in patrons():
+                    try:
+                        await bot.send_message(
+                            pid,
+                            f"⚠️ <b>Не удалось скачать вложение</b>\n"
+                            f"От: {item['from']}\nТема: {item['subject']}\n"
+                            f"Файл: {fn}\n\nПосмотри это письмо в почте вручную.")
+                    except Exception:
+                        pass
                 continue
             candidate = extract_name_from_filename(fn)
             hr_idx, hr_row = find_checklist_match(candidate)
@@ -818,8 +845,9 @@ async def notify_new_contracts() -> int:
                             f"✅ Файл <b>{fn}</b> распознан и привязан к "
                             f"<b>{fio}</b> — карточка сотрудника создана.")
                         await bot.send_document(pid, BufferedInputFile(raw, filename=fn))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log.error("Не удалось уведомить patron %s о найденном контракте %s: %s",
+                                  pid, fn, e)
                 if file_type == "CONTRATO":
                     await notify_empleados(fio)
             else:
@@ -833,8 +861,9 @@ async def notify_new_contracts() -> int:
                             f"⚠️ Не удалось автоматически определить, к кому "
                             f"относится — привяжи вручную.")
                         await bot.send_document(pid, BufferedInputFile(raw, filename=fn))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log.error("Не удалось уведомить patron %s о нераспознанном письме %s: %s",
+                                  pid, fn, e)
 
         mark_mail_seen(item["id"], item["date"], item["from"], item["subject"], names)
     return len(found)
@@ -869,10 +898,8 @@ def _gmail_diag_sync():
     if not token:
         return {"auth_ok": False, "count": 0}
     q = " OR ".join(f"filename:{kw}" for kw in GMAIL_ATTACHMENT_KEYWORDS)
-    data = _gmail_api_get_sync("messages", {"q": q, "maxResults": 20})
-    if data is None:
-        return {"auth_ok": False, "count": 0}
-    return {"auth_ok": True, "count": len(data.get("messages", []))}
+    ids = _gmail_search_all_messages(q)
+    return {"auth_ok": True, "count": len(ids)}
 
 
 async def gmail_diag():
