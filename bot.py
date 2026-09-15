@@ -652,6 +652,28 @@ async def notify_new_contracts() -> int:
     return len(found)
 
 
+async def gmail_watch_loop():
+    """Фоновая задача — проверяет почту каждые GMAIL_CHECK_INTERVAL секунд."""
+    while True:
+        try:
+            await notify_new_contracts()
+            if _gmail_auth_status["broken"] and not _gmail_auth_status["notified"]:
+                _gmail_auth_status["notified"] = True
+                for pid in patrons():
+                    try:
+                        await bot.send_message(
+                            pid,
+                            "⚠️ Доступ к почте (sl.valencia.resta@gmail.com) для проверки "
+                            "контрактов истёк — нужна повторная авторизация через OAuth "
+                            "Playground (та же процедура, что настраивали).",
+                        )
+                    except Exception:
+                        pass
+        except Exception as e:
+            log.error("Ошибка фоновой проверки почты: %s", e)
+        await asyncio.sleep(GMAIL_CHECK_INTERVAL)
+
+
 def _gmail_diag_sync():
     """Диагностика: сколько писем Gmail вообще находит по поисковому запросу
     (до фильтрации по вложениям) — помогает понять, где рвётся цепочка."""
