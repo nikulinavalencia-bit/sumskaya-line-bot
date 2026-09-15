@@ -721,8 +721,8 @@ async def notify_empleados(fio: str):
     try:
         await bot.send_message(
             int(EMPLEADOS_CHAT_ID),
-            f"📄 Документы {fio} готовы — можно приходить подписывать, "
-            f"{SIGNING_HOURS}.",
+            f"📄 Los documentos de {fio} ya están listos — puede pasar a "
+            f"firmarlos, de {SIGNING_HOURS}.",
         )
     except Exception as e:
         log.error("Не удалось отправить в Empleados: %s", e)
