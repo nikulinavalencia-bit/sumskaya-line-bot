@@ -13,6 +13,13 @@ import re
 from time import time
 import time as time_module
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+TZ = ZoneInfo("Europe/Madrid")
+
+
+def now_local():
+    return datetime.now(TZ)
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -186,7 +193,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 _gc = gspread.authorize(Credentials.from_service_account_info(GOOGLE_CREDS, scopes=SCOPES))
 
 
-def _open_sheet_with_retry(gc, sheet_id, attempts=4, delay=5):
+def _open_sheet_with_retry(gc, sheet_id, attempts=5, delay=20):
     """При старте иногда ловим 429 (лимит Google API) из-за частых рестартов —
     пробуем ещё раз вместо мгновенного краша всего процесса."""
     last_exc = None
@@ -241,6 +248,19 @@ def _norm(s: str) -> str:
 
 
 _ws_cache = {}
+_all_sheets_cache = {"ts": 0, "data": []}
+
+
+def _all_sheets():
+    """Список вкладок таблицы — кэшируем на минуту, чтобы не дёргать API
+    по разу на каждый вызов ws() (раньше это было главной причиной
+    перерасхода лимита Google при старте бота)."""
+    if time() - _all_sheets_cache["ts"] < 60 and _all_sheets_cache["data"]:
+        return _all_sheets_cache["data"]
+    data = _sh.worksheets()
+    _all_sheets_cache["ts"] = time()
+    _all_sheets_cache["data"] = data
+    return data
 
 
 def ws(name: str):
@@ -251,7 +271,7 @@ def ws(name: str):
     if name in _ws_cache:
         return _ws_cache[name]
     target = _norm(name)
-    sheets = _sh.worksheets()
+    sheets = _all_sheets()
 
     # точное совпадение
     for w in sheets:
@@ -276,6 +296,7 @@ def ws(name: str):
     w = _sh.add_worksheet(title=name, rows=1000, cols=14)
     w.append_row(HEADERS.get(name, []))
     _ws_cache[name] = w
+    _all_sheets_cache["ts"] = 0  # список вкладок изменился — не доверяем кэшу
     return w
 
 
@@ -429,7 +450,7 @@ async def download_drive_file(link: str):
 
 
 def add_to_hr_checklist(row_idx: int, r: dict, author: str) -> int:
-    now = datetime.now()
+    now = now_local()
     fio = f"{r.get('Nombre', '')} {r.get('Apellido', '')}".strip()
     w = ws(HR_WS)
     w.append_row([
@@ -442,7 +463,7 @@ def add_to_hr_checklist(row_idx: int, r: dict, author: str) -> int:
 
 
 def set_hr_stage(hr_row_idx: int, stage: str, author: str):
-    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+    now = now_local().strftime("%d.%m.%Y %H:%M")
     w = ws(HR_WS)
     w.update_cell(hr_row_idx, 6, stage)
     w.update_cell(hr_row_idx, 7, author)
@@ -479,7 +500,7 @@ def hr_doc_warning(r: dict) -> str:
     d = parse_ddmmyyyy(expiry_raw)
     if not d:
         return "❔ срок документа не распознан"
-    today = datetime.now().date()
+    today = now_local().date()
     if d < today:
         return f"⛔ документ просрочен ({expiry_raw})"
     if (d - today).days <= 30:
@@ -742,7 +763,7 @@ def doc_already_saved(chat_id, msg_id) -> bool:
 
 
 def save_doc(loc, typ, author, chat_id, msg_id, file_id, text) -> int:
-    now = datetime.now()
+    now = now_local()
     w = ws(DOCS_WS)
     w.append_row([
         now.strftime("%d.%m.%Y"), now.strftime("%H:%M"),
@@ -830,7 +851,7 @@ async def forward_doc_to_billz(loc: str, typ: str, file_id: str, text: str) -> b
 
     prefix = EMAIL_SUBJECT_PREFIX[typ]
     loc_name = LOCALES.get(loc, {}).get("name", loc)
-    now = datetime.now()
+    now = now_local()
     subject = f"{prefix} — {loc_name} — {now.strftime('%d.%m.%Y')}"
     body = text or f"{prefix} от {loc_name}, {now.strftime('%d.%m.%Y %H:%M')}"
 
@@ -866,7 +887,7 @@ def pending_docs_by(loc: str = None, typ: str = None):
 
 def today_stats():
     """{локаль: {тип: количество}} за сегодня."""
-    today = datetime.now().strftime("%d.%m.%Y")
+    today = now_local().strftime("%d.%m.%Y")
     stats = {loc: {typ: 0 for typ in DOCTYPES} for loc in LOCALES}
     for r in rows(DOCS_WS, force=True):
         if str(r.get("Дата")).strip() != today:
@@ -914,7 +935,7 @@ def archived() -> set:
 
 def archive_add(dish: str, who: str):
     ws(ARCHIVE_WS).append_row(
-        [dish, who, datetime.now().strftime("%d.%m.%Y %H:%M")], value_input_option="RAW")
+        [dish, who, now_local().strftime("%d.%m.%Y %H:%M")], value_input_option="RAW")
     drop_cache(ARCHIVE_WS)
 
 
@@ -1021,7 +1042,7 @@ def dish_photo(dish: str):
 
 def save_photo(dish: str, file_id: str, who: str):
     ws(PHOTOS_WS).append_row(
-        [dish, file_id, who, datetime.now().strftime("%d.%m.%Y %H:%M")],
+        [dish, file_id, who, now_local().strftime("%d.%m.%Y %H:%M")],
         value_input_option="RAW")
     drop_cache(PHOTOS_WS)
 
@@ -1690,7 +1711,7 @@ async def cb_today(c: CallbackQuery):
     lang = ulang(u)
     nav_push(c.from_user.id, c.data)
     stats = today_stats()
-    today = datetime.now().strftime("%d.%m.%Y")
+    today = now_local().strftime("%d.%m.%Y")
     lines = [f"📊 <b>{t('today_title', lang)}</b> · {today}\n"]
     total = 0
     for code, L in LOCALES.items():
@@ -2380,7 +2401,7 @@ async def main():
         BotCommand(command="start", description="🔄 Обновить / открыть меню"),
     ])
 
-    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+    now = now_local().strftime("%d.%m.%Y %H:%M")
     for pid in patrons():
         try:
             await bot.send_message(pid, f"🟢 Бот перезапущен — {now}")
@@ -2390,7 +2411,22 @@ async def main():
     if GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET and GMAIL_REFRESH_TOKEN:
         asyncio.create_task(gmail_watch_loop())
 
-    await dp.start_polling(bot)
+    while True:
+        try:
+            await dp.start_polling(bot)
+            break
+        except Exception as e:
+            log.exception("Сбой в цикле polling: %s", e)
+            for pid in patrons():
+                try:
+                    await bot.send_message(
+                        pid,
+                        f"🔴 Сбой в работе бота, перезапускаю через 10 сек (без потери "
+                        f"подключения к таблице):\n<code>{type(e).__name__}: {e}</code>"[:4000],
+                    )
+                except Exception:
+                    pass
+            await asyncio.sleep(10)
 
 
 if __name__ == "__main__":
