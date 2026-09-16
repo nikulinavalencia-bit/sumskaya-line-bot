@@ -288,7 +288,7 @@ HEADERS = {
                  "Срок документа", "Разрешение на работу"],
     MAIL_WS:    ["MessageID", "Дата", "От кого", "Тема", "Вложение", "ФИО", "Тип"],
     EMPLOYEES_WS: ["ФИО", "Локаль", "Должность", "Дата заявки",
-                   "Тип файла", "Имя файла", "GmailMsgID", "Дата добавления"],
+                   "Тип файла", "Имя файла", "GmailMsgID", "Дата добавления", "RowKey"],
     EMPLEADOS_REQ_WS: ["Категория", "Текст", "Автор", "ChatID", "MessageID",
                         "FileID", "Дата", "Статус"],
 }
@@ -834,6 +834,7 @@ def add_employee_card(r: dict, file_type: str, filename: str, gmail_msg_id: str)
     ws(EMPLOYEES_WS).append_row([
         str(r.get("ФИО", "")), str(r.get("Локаль", "")), str(r.get("Должность", "")),
         str(r.get("Дата заявки", "")), file_type, filename, gmail_msg_id, now,
+        str(r.get("RowKey", "")),
     ], value_input_option="RAW")
     drop_cache(EMPLOYEES_WS)
 
@@ -947,6 +948,15 @@ async def gmail_watch_loop():
                         pass
         except Exception as e:
             log.error("Ошибка фоновой проверки почты: %s", e)
+            for pid in patrons():
+                try:
+                    await bot.send_message(
+                        pid,
+                        f"🔴 Ошибка при фоновой проверке почты:\n"
+                        f"<code>{type(e).__name__}: {html_lib.escape(str(e))}</code>"[:4000],
+                    )
+                except Exception:
+                    pass
         await asyncio.sleep(GMAIL_CHECK_INTERVAL)
 
 
@@ -2431,14 +2441,57 @@ async def cb_hr_employee_detail(c: CallbackQuery):
     except IndexError:
         await c.answer("—", show_alert=True)
         return
-    text = (f"👤 <b>{r.get('ФИО', '')}</b>\n"
-            f"{r.get('Локаль', '')} · {r.get('Должность', '')}\n\n"
-            f"Заявка от: {r.get('Дата заявки', '')}\n"
-            f"Файл: {r.get('Тип файла', '')} — {r.get('Имя файла', '')}\n"
-            f"Добавлено: {r.get('Дата добавления', '')}")
-    kb = [[InlineKeyboardButton(text=t("back", ulang(u)), callback_data="bk")]]
+
+    row_key = str(r.get("RowKey", "")).strip()
+    applicant = {}
+    if row_key:
+        try:
+            applicant = applicants_rows()[int(row_key) - 2]
+        except Exception:
+            pass
+
+    if applicant:
+        block = format_applicant_block(applicant)
+        text = f"👤 <b>Сотрудник</b>\n\n<code>{block}</code>"
+    else:
+        text = (f"👤 <b>{r.get('ФИО', '')}</b>\n"
+                f"{r.get('Локаль', '')} · {r.get('Должность', '')}\n"
+                f"Заявка от: {r.get('Дата заявки', '')}")
+
+    filename = str(r.get("Имя файла", "")).strip()
+    msg_id = str(r.get("GmailMsgID", "")).strip()
+    text += (f"\n\n📎 Контракт: {html_lib.escape(filename)}\n"
+             f"Добавлено: {r.get('Дата добавления', '')}")
+
+    kb = []
+    if msg_id and filename:
+        kb.append([InlineKeyboardButton(text="📥 Прислать контракт", callback_data=f"hredl:{idx}")])
+    kb.append([InlineKeyboardButton(text=t("back", ulang(u)), callback_data="bk")])
     await take_over(c, text, InlineKeyboardMarkup(inline_keyboard=kb))
     await c.answer()
+
+
+@dp.callback_query(F.data.startswith("hredl:"))
+async def cb_hr_employee_download(c: CallbackQuery):
+    u = get_user(c.from_user.id)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    idx = int(c.data.split(":")[1])
+    data = rows(EMPLOYEES_WS, force=True)
+    try:
+        r = data[idx - 2]
+    except IndexError:
+        await c.answer("—", show_alert=True)
+        return
+    filename = str(r.get("Имя файла", "")).strip()
+    msg_id = str(r.get("GmailMsgID", "")).strip()
+    await c.answer("Скачиваю…")
+    raw = await gmail_redownload(msg_id, filename)
+    if raw:
+        await bot.send_document(c.from_user.id, BufferedInputFile(raw, filename=filename))
+    else:
+        await bot.send_message(c.from_user.id, "⚠️ Не удалось скачать файл повторно.")
 
 
 def pending_empleados_requests(category: str = None):
