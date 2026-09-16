@@ -286,7 +286,7 @@ HEADERS = {
     HR_WS:      ["RowKey", "ФИО", "Локаль", "Должность", "Дата заявки",
                  "Статус", "Обновил", "Дата обновления",
                  "Срок документа", "Разрешение на работу"],
-    MAIL_WS:    ["MessageID", "Дата", "От кого", "Тема", "Вложение"],
+    MAIL_WS:    ["MessageID", "Дата", "От кого", "Тема", "Вложение", "ФИО", "Тип"],
     EMPLOYEES_WS: ["ФИО", "Локаль", "Должность", "Дата заявки",
                    "Тип файла", "Имя файла", "GmailMsgID", "Дата добавления"],
     EMPLEADOS_REQ_WS: ["Категория", "Текст", "Автор", "ChatID", "MessageID",
@@ -382,37 +382,47 @@ def drop_cache(name: str):
 # ---------------- HR: заявки кандидатов + чек-лист оформления ----------------
 
 _applicants_sh = None
+_applicants_ws_cache = None
 
 
 def applicants_ws():
-    global _applicants_sh
+    global _applicants_sh, _applicants_ws_cache
+    if _applicants_ws_cache is not None:
+        return _applicants_ws_cache
     if _applicants_sh is None:
         _applicants_sh = _gc.open_by_key(APPLICANTS_SHEET_ID)
     sheets = _applicants_sh.worksheets()
     target = _norm(APPLICANTS_WS_NAME)
     for w in sheets:
         if _norm(w.title) == target:
+            _applicants_ws_cache = w
             return w
     # точного совпадения нет — берём первую вкладку таблицы
     log.warning("лист '%s' не найден в таблице заявок, использую '%s'",
                 APPLICANTS_WS_NAME, sheets[0].title)
+    _applicants_ws_cache = sheets[0]
     return sheets[0]
 
 
 _registro_sh = None
+_registro_ws_cache = None
 
 
 def registro_ws():
-    global _registro_sh
+    global _registro_sh, _registro_ws_cache
+    if _registro_ws_cache is not None:
+        return _registro_ws_cache
     if _registro_sh is None:
         _registro_sh = _gc.open_by_key(REGISTRO_SHEET_ID)
     sheets = _registro_sh.worksheets()
     target = _norm(REGISTRO_WS_NAME)
     for w in sheets:
         if _norm(w.title) == target:
+            _registro_ws_cache = w
             return w
     log.warning("лист '%s' не найден в таблице Registro, использую '%s'",
                 REGISTRO_WS_NAME, sheets[0].title)
+    _registro_ws_cache = sheets[0]
     return sheets[0]
 
 
@@ -453,7 +463,7 @@ def registro_append(values_by_header: dict):
     w.append_row(row, value_input_option="USER_ENTERED")
     if unmatched:
         log.warning("В Registro не нашлось колонок для: %s", list(unmatched.keys()))
-    return unmatched
+    return unmatched, header_row, headers
 
 
 def applicants_rows(force=False):
@@ -492,6 +502,26 @@ HR_STAGES = [
 
 def tracked_row_keys() -> set:
     return {str(r.get("RowKey")) for r in rows(HR_WS, force=True)}
+
+
+FEMALE_NAME_ENDINGS = ("a", "ia", "iya", "aya", "ka", "na")
+MALE_NAME_EXCEPTIONS = {  # имена на "а", которые на самом деле мужские
+    "nikita", "ilya", "kuzma", "foma", "luka", "sasha", "tolya", "kolya",
+    "vitalya", "vania",
+}
+
+
+def guess_sex(first_name: str) -> str:
+    """Грубая догадка по окончанию имени — только подсказка, не финальное
+    значение, пользователь всегда подтверждает сам."""
+    n = _norm(first_name)
+    if not n:
+        return ""
+    if n in MALE_NAME_EXCEPTIONS:
+        return "мужчина (M)"
+    if n.endswith(FEMALE_NAME_ENDINGS):
+        return "женщина (F)"
+    return "мужчина (M)"
 
 
 def match_locale_code(text: str) -> str:
@@ -765,8 +795,10 @@ async def gmail_download_attachment(msg_id: str, attachment_id: str):
     return await asyncio.to_thread(_gmail_download_attachment_sync, msg_id, attachment_id)
 
 
-def mark_mail_seen(msg_id: str, date: str, sender: str, subject: str, attachment: str):
-    ws(MAIL_WS).append_row([msg_id, date, sender, subject, attachment], value_input_option="RAW")
+def mark_mail_seen(msg_id: str, date: str, sender: str, subject: str, attachment: str,
+                    fio: str = "", file_type: str = ""):
+    ws(MAIL_WS).append_row([msg_id, date, sender, subject, attachment, fio, file_type],
+                            value_input_option="RAW")
     drop_cache(MAIL_WS)
 
 
@@ -830,6 +862,7 @@ async def notify_new_contracts() -> int:
         item_subject = html_lib.escape(item.get("subject", ""))
         names = ", ".join(fn for fn, _ in item["attachments"])
         matched_any = False
+        last_candidate, last_file_type = "", ""
 
         for fn, aid in item["attachments"]:
             fn_esc = html_lib.escape(fn)
@@ -850,6 +883,7 @@ async def notify_new_contracts() -> int:
             hr_idx, hr_row = find_checklist_match(candidate)
             file_type = next((kw for kw in GMAIL_ATTACHMENT_KEYWORDS
                                if kw.lower() in fn.lower()), "")
+            last_candidate, last_file_type = candidate, file_type
 
             if hr_row:
                 matched_any = True
@@ -889,7 +923,7 @@ async def notify_new_contracts() -> int:
                                   pid, fn, e)
 
         sheets_write_retry(mark_mail_seen, item["id"], item["date"], item["from"],
-                            item["subject"], names)
+                            item["subject"], names, last_candidate, last_file_type)
         await asyncio.sleep(2)  # не жечь лимит записи Google при пачке писем разом
     return len(found)
 
@@ -1716,6 +1750,8 @@ async def cb_dept(c: CallbackQuery):
             n_req = sum(1 for r in rows(EMPLEADOS_REQ_WS) if str(r.get("Статус")).strip() == "новый")
             kb.append([InlineKeyboardButton(
                 text=f"📨 Заявки сотрудников ({n_req})", callback_data="hrq")])
+            kb.append([InlineKeyboardButton(
+                text=f"🗄 Архив по почте ({len(rows(MAIL_WS))})", callback_data="hrarch")])
         kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
         await take_over(c, f"{crumb(dept, lang)}", InlineKeyboardMarkup(inline_keyboard=kb))
         await c.answer()
@@ -1947,7 +1983,9 @@ async def on_private_photo(m: Message):
         pass
 
 
-@dp.message(F.chat.type == "private", lambda m: m.from_user.id in _awaiting_hr_input)
+@dp.message(F.chat.type == "private",
+            lambda m: m.from_user.id in _awaiting_hr_input
+            and not (m.text and m.text.startswith("/")))
 async def on_private_text(m: Message):
     idx = _awaiting_hr_input.get(m.from_user.id)
     if not idx:
@@ -1968,7 +2006,9 @@ async def on_private_text(m: Message):
     await m.answer("Сохранено ✅")
 
 
-@dp.message(F.chat.type == "private", lambda m: m.from_user.id in _awaiting_registro_input)
+@dp.message(F.chat.type == "private",
+            lambda m: m.from_user.id in _awaiting_registro_input
+            and not (m.text and m.text.startswith("/")))
 async def on_private_text_registro(m: Message):
     idx = _awaiting_registro_input.get(m.from_user.id)
     if not idx:
@@ -2039,7 +2079,7 @@ async def on_private_text_registro(m: Message):
     }
 
     try:
-        unmatched = registro_append(values)
+        unmatched, header_row, headers = registro_append(values)
     except Exception as e:
         log.error("Ошибка записи в Registro: %s", e)
         await m.answer(f"⚠️ Не удалось записать в Registro: {type(e).__name__}: {e}")
@@ -2050,7 +2090,8 @@ async def on_private_text_registro(m: Message):
     set_hr_stage(idx, HR_STAGES[-1], author)
     note = "Записано в Registro ✅"
     if unmatched:
-        note += f"\n(не нашли колонки: {', '.join(unmatched.keys())})"
+        note += (f"\n(не нашли колонки: {', '.join(unmatched.keys())})"
+                  f"\n\nНашла заголовки в строке {header_row}:\n{', '.join(headers)}")
     await m.answer(note)
 
 
@@ -2496,6 +2537,235 @@ async def cb_hr_requests_done(c: CallbackQuery):
     await nav_back(c)
 
 
+def backfill_mail_archive() -> int:
+    """Для уже записанных ранее писем (до появления колонок ФИО/Тип)
+    достраивает имя и тип задним числом — чтобы старые письма тоже
+    попали в папки архива, а не потерялись."""
+    w = ws(MAIL_WS)
+    data = w.get_all_values()
+    if not data:
+        return 0
+    headers = data[0]
+    if not all(h in headers for h in ("Вложение", "ФИО", "Тип")):
+        return 0
+    idx_att = headers.index("Вложение")
+    idx_fio = headers.index("ФИО")
+    idx_tipo = headers.index("Тип")
+
+    updates = []
+    count = 0
+    for i, row in enumerate(data[1:], start=2):
+        att = row[idx_att] if idx_att < len(row) else ""
+        fio_val = row[idx_fio] if idx_fio < len(row) else ""
+        if not att or fio_val:
+            continue
+        first_fn = att.split(",")[0].strip()
+        candidate = extract_name_from_filename(first_fn)
+        file_type = next((kw for kw in GMAIL_ATTACHMENT_KEYWORDS
+                           if kw.lower() in first_fn.lower()), "")
+        if not candidate and not file_type:
+            continue
+        updates.append({"range": gspread.utils.rowcol_to_a1(i, idx_fio + 1),
+                         "values": [[candidate]]})
+        updates.append({"range": gspread.utils.rowcol_to_a1(i, idx_tipo + 1),
+                         "values": [[file_type]]})
+        count += 1
+
+    if updates:
+        sheets_write_retry(w.batch_update, updates, value_input_option="RAW")
+        drop_cache(MAIL_WS)
+    return count
+
+
+def mail_archive_names():
+    """Уникальные имена из архива почты с количеством документов у каждого."""
+    counts = {}
+    for r in rows(MAIL_WS, force=True):
+        fio = str(r.get("ФИО", "")).strip()
+        if fio:
+            counts[fio] = counts.get(fio, 0) + 1
+    return sorted(counts.items())
+
+
+def _gmail_redownload_sync(msg_id: str, filename: str):
+    msg = _gmail_api_get_sync(f"messages/{msg_id}", {"format": "full"})
+    if not msg:
+        return None
+    for fn, aid in _walk_gmail_parts(msg.get("payload", {})):
+        if fn == filename:
+            return _gmail_download_attachment_sync(msg_id, aid)
+    return None
+
+
+async def gmail_redownload(msg_id: str, filename: str):
+    return await asyncio.to_thread(_gmail_redownload_sync, msg_id, filename)
+
+
+@dp.callback_query(F.data == "hrarchfill")
+async def cb_hr_archive_fill(c: CallbackQuery):
+    u = get_user(c.from_user.id)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    await c.answer("Раскладываю…")
+    n = await asyncio.to_thread(backfill_mail_archive)
+    await bot.send_message(c.from_user.id, f"Готово — разложено {n} писем по папкам.")
+    await route(c, "hrarch")
+
+
+@dp.callback_query(F.data == "hrarch")
+async def cb_hr_archive(c: CallbackQuery):
+    u = guard(c)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    lang = ulang(u)
+    nav_push(c.from_user.id, c.data)
+    all_rows = rows(MAIL_WS, force=True)
+    kb = []
+    for kw in GMAIL_ATTACHMENT_KEYWORDS:  # CONTRATO, BAJA, CAMBIO
+        cnt = sum(1 for r in all_rows if str(r.get("Тип", "")).strip() == kw)
+        emoji = {"CONTRATO": "📄", "BAJA": "🔴", "CAMBIO": "🔁"}.get(kw, "📌")
+        kb.append([InlineKeyboardButton(text=f"{emoji} {kw} ({cnt})",
+                                         callback_data=f"hrarchcat:{kw}")])
+    kb.append([InlineKeyboardButton(text=f"🔤 По имени ({len(mail_archive_names())})",
+                                     callback_data="hrarchn")])
+    kb.append([InlineKeyboardButton(text="🔄 Разложить старые письма по папкам",
+                                     callback_data="hrarchfill")])
+    kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
+    await take_over(c, "🗄 <b>Архив по почте</b>\n\nВыбери папку:",
+                    InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("hrarchcat:"))
+async def cb_hr_archive_cat(c: CallbackQuery):
+    u = guard(c)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    lang = ulang(u)
+    nav_push(c.from_user.id, c.data)
+    cat = c.data.split(":", 1)[1]
+    docs = [r for r in rows(MAIL_WS, force=True) if str(r.get("Тип", "")).strip() == cat]
+    title = f"🗄 <b>{cat}</b>"
+    if not docs:
+        text = f"{title}\n\nПусто."
+        kb = [[InlineKeyboardButton(text=t("back", lang), callback_data="bk")]]
+    else:
+        lines = [f"{title} — {len(docs)} документ(ов)\n"]
+        for r in docs[:60]:
+            fio = str(r.get("ФИО", "")).strip() or "—"
+            lines.append(f"{fio} · {r.get('Вложение', '')} · {r.get('Дата', '')}")
+        text = "\n".join(lines)[:4000]
+        kb = [[InlineKeyboardButton(text="📥 Прислать все файлы этой папки",
+                                     callback_data=f"hrarchcatdl:{cat}")],
+              [InlineKeyboardButton(text=t("back", lang), callback_data="bk")]]
+    await take_over(c, text, InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("hrarchcatdl:"))
+async def cb_hr_archive_cat_download(c: CallbackQuery):
+    u = get_user(c.from_user.id)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    cat = c.data.split(":", 1)[1]
+    docs = [r for r in rows(MAIL_WS, force=True) if str(r.get("Тип", "")).strip() == cat]
+    await c.answer("Собираю файлы…")
+    for r in docs:
+        msg_id = str(r.get("MessageID", "")).strip()
+        filename = str(r.get("Вложение", "")).strip()
+        if not msg_id or not filename:
+            continue
+        raw = await gmail_redownload(msg_id, filename)
+        if raw:
+            try:
+                await bot.send_document(c.from_user.id, BufferedInputFile(raw, filename=filename))
+            except Exception as e:
+                log.error("Не удалось переслать архивный файл %s: %s", filename, e)
+        await asyncio.sleep(1)
+
+
+@dp.callback_query(F.data == "hrarchn")
+async def cb_hr_archive_by_name(c: CallbackQuery):
+    u = guard(c)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    lang = ulang(u)
+    nav_push(c.from_user.id, c.data)
+    names = mail_archive_names()
+    title = "🔤 <b>Архив по имени</b>"
+    if not names:
+        text = f"{title}\n\nПусто."
+        kb = [[InlineKeyboardButton(text=t("back", lang), callback_data="bk")]]
+    else:
+        text = f"{title} — {len(names)} имён"
+        kb = []
+        for i, (name, cnt) in enumerate(names[:60]):
+            kb.append([InlineKeyboardButton(text=f"{name} ({cnt})", callback_data=f"hrarch:{i}")])
+        kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
+    await take_over(c, text, InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("hrarch:"))
+async def cb_hr_archive_name(c: CallbackQuery):
+    u = guard(c)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    nav_push(c.from_user.id, c.data)
+    idx = int(c.data.split(":")[1])
+    names = mail_archive_names()
+    try:
+        name, _ = names[idx]
+    except IndexError:
+        await c.answer("—", show_alert=True)
+        return
+    docs = [r for r in rows(MAIL_WS, force=True) if str(r.get("ФИО", "")).strip() == name]
+    lines = [f"🗄 <b>{html_lib.escape(name)}</b> — {len(docs)} документ(ов)\n"]
+    for r in docs:
+        lines.append(f"{r.get('Тип', '')} · {r.get('Вложение', '')} · {r.get('Дата', '')}")
+    text = "\n".join(lines)[:4000]
+    kb = [[InlineKeyboardButton(text="📥 Прислать все файлы",
+                                 callback_data=f"hrarchdl:{idx}")],
+          [InlineKeyboardButton(text=t("back", ulang(u)), callback_data="bk")]]
+    await take_over(c, text, InlineKeyboardMarkup(inline_keyboard=kb))
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("hrarchdl:"))
+async def cb_hr_archive_download(c: CallbackQuery):
+    u = get_user(c.from_user.id)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    idx = int(c.data.split(":")[1])
+    names = mail_archive_names()
+    try:
+        name, _ = names[idx]
+    except IndexError:
+        await c.answer("—", show_alert=True)
+        return
+    docs = [r for r in rows(MAIL_WS, force=True) if str(r.get("ФИО", "")).strip() == name]
+    await c.answer("Собираю файлы…")
+    for r in docs:
+        msg_id = str(r.get("MessageID", "")).strip()
+        filename = str(r.get("Вложение", "")).strip()
+        if not msg_id or not filename:
+            continue
+        raw = await gmail_redownload(msg_id, filename)
+        if raw:
+            try:
+                await bot.send_document(c.from_user.id, BufferedInputFile(raw, filename=filename))
+            except Exception as e:
+                log.error("Не удалось переслать архивный файл %s: %s", filename, e)
+        await asyncio.sleep(1)
+
+
 @dp.callback_query(F.data == "hrmail")
 async def cb_hr_mail_check(c: CallbackQuery):
     u = get_user(c.from_user.id)
@@ -2637,11 +2907,15 @@ async def cb_hr_next(c: CallbackQuery):
     if next_stage == HR_STAGES[-1]:  # "Активен" — перед этим соберём Registro
         _awaiting_registro_input[c.from_user.id] = idx
         await c.answer()
+        fio = str(r.get('ФИО', ''))
+        first_name = fio.split()[0] if fio.split() else ""
+        guess = guess_sex(first_name)
+        sex_hint = f" (похоже, {guess} — но проверь)" if guess else ""
         await bot.send_message(
             c.from_user.id,
-            f"Финальный этап для <b>{r.get('ФИО', '')}</b> — заполняю строку "
+            f"Финальный этап для <b>{fio}</b> — заполняю строку "
             f"в Registro. Напиши 6 строк подряд:\n"
-            f"1) Пол — M / F\n"
+            f"1) Пол — M / F{sex_hint}\n"
             f"2) Departamento (например Cocina, Barra, Managment)\n"
             f"3) Fecha de Alta — дд.мм.гггг\n"
             f"4) Tipo de contrato (например Indefinido, Temporal)\n"
@@ -2841,6 +3115,10 @@ ROUTES = [
     ("hrq:",  lambda cc: cb_hr_requests_cat(cc)),
     ("hrqd:", lambda cc: cb_hr_requests_detail(cc)),
     ("hrq",   lambda cc: cb_hr_requests(cc)),
+    ("hrarchcat:", lambda cc: cb_hr_archive_cat(cc)),
+    ("hrarchn",    lambda cc: cb_hr_archive_by_name(cc)),
+    ("hrarch:",    lambda cc: cb_hr_archive_name(cc)),
+    ("hrarch",     lambda cc: cb_hr_archive(cc)),
     ("d:",    lambda cc: cb_dept(cc)),
     ("l:",    lambda cc: cb_loc(cc)),
     ("mg:",   lambda cc: cb_menu_group(cc)),
@@ -2922,6 +3200,9 @@ async def start(m: Message):
     if m.chat.type != "private":
         return
     uid, name = m.from_user.id, m.from_user.full_name
+    _awaiting_hr_input.pop(uid, None)
+    _awaiting_registro_input.pop(uid, None)
+    _awaiting_photo.pop(uid, None)
     u = get_user(uid)
 
     if not rows(USERS_WS, force=True):
