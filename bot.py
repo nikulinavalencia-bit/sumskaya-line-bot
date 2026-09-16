@@ -99,9 +99,9 @@ DEFAULT_LANG = "ru"
 # Локали. Эмодзи меняются здесь одной строкой.
 LOCALES = {
     "reina":     {"name": "Reina",     "emoji": "🍝", "tag": "REINA"},
-    "fransia":   {"name": "Fransia",   "emoji": "🍕", "tag": "FRANSIA"},
-    "panaderia": {"name": "Panadería", "emoji": "🥖", "tag": "PANADERIA"},
-    "boiboi":    {"name": "Boi Boi",   "emoji": "🍣", "tag": "BOIBOI"},
+    "fransia":   {"name": "Fransia",   "emoji": "🍕", "tag": "FRANCIA"},
+    "panaderia": {"name": "Panadería", "emoji": "🥖", "tag": "BAKERY"},
+    "boiboi":    {"name": "Boi Boi",   "emoji": "🍣", "tag": "BOI BOI"},
 }
 
 DEPTS = {
@@ -522,6 +522,35 @@ def guess_sex(first_name: str) -> str:
     if n.endswith(FEMALE_NAME_ENDINGS):
         return "женщина (F)"
     return "мужчина (M)"
+
+
+DEPARTAMENTOS = ["Cocina", "Panadería", "Barra", "TopManagement", "Management",
+                  "Limpieza", "Camareros", "Ayudantes", "Pasteleria", "Conductores"]
+
+# Название должности из анкеты кандидата иногда чуть отличается от точного
+# текста в выпадающем списке Registro — приводим к нему.
+PUESTO_MAP = {
+    "ayudante camarero": "Ayudante de camarero",
+    "ayudante cocina": "Ayudante de cocina",
+    "ayudante panaderia": "Ayudante de panadería",
+    "ayudante panadero": "Ayudante de panadería",
+    "ayudante pasteleria": "Ayudante de pastelería",
+    "ayudante pastelero": "Ayudante de pastelería",
+    "limpieza": "Personal de limpieza",
+}
+
+
+def match_departamento(text: str) -> str:
+    n = _norm(text)
+    for d in DEPARTAMENTOS:
+        if _norm(d) == n:
+            return d
+    return ""
+
+
+def normalize_puesto(text: str) -> str:
+    n = _norm(text)
+    return PUESTO_MAP.get(n, text)
 
 
 def match_locale_code(text: str) -> str:
@@ -2024,20 +2053,29 @@ async def on_private_text_registro(m: Message):
     if not idx:
         return
     parts = [p.strip() for p in m.text.strip().splitlines() if p.strip()]
-    if len(parts) < 6:
-        await m.answer("Нужно 6 строк (пол / departamento / дата / тип контракта / "
-                        "график / ссылка на папку Диска). Попробуй ещё раз, каждое "
+    if len(parts) < 5:
+        await m.answer("Нужно 5 строк (пол / departamento / дата / график / "
+                        "ссылка на папку Диска). Попробуй ещё раз, каждое "
                         "с новой строки.")
         return
-    sex, departamento, fecha_alta_raw, tipo_contrato, horario, folder_link = parts[:6]
+    sex, departamento, fecha_alta_raw, horario, folder_link = parts[:5]
+    tipo_contrato = "Contratado Nuevo"
     if sex.strip().upper() not in ("M", "F"):
         await m.answer("Первая строка должна быть M или F. Попробуй ещё раз.")
         return
+    departamento_matched = match_departamento(departamento)
+    if not departamento_matched:
+        await m.answer(
+            "2-я строка (Departamento) должна быть ровно одним из списка:\n"
+            + ", ".join(DEPARTAMENTOS) + "\nПопробуй ещё раз."
+        )
+        return
+    departamento = departamento_matched
     if not parse_ddmmyyyy(fecha_alta_raw):
         await m.answer("Дата (3-я строка) не распознана, формат дд.мм.гггг. Попробуй ещё раз.")
         return
     if not folder_link.startswith("http"):
-        await m.answer("6-я строка должна быть ссылкой на папку Google Диска "
+        await m.answer("5-я строка должна быть ссылкой на папку Google Диска "
                         "(начинается с http). Попробуй ещё раз.")
         return
 
@@ -2071,7 +2109,7 @@ async def on_private_text_registro(m: Message):
         "local": loc_label,
         "Horas": str(applicant.get("Número de horas bajo contrato", "")).strip(),
         "Departamento": departamento,
-        "Puesto": str(hr_row.get("Должность", "")).strip(),
+        "Puesto": normalize_puesto(str(hr_row.get("Должность", "")).strip()),
         "Fecha de Alta": fecha_alta_raw,
         "Tipo de contrato": tipo_contrato,
         "Horario": horario,
@@ -2967,14 +3005,13 @@ async def cb_hr_next(c: CallbackQuery):
         await bot.send_message(
             c.from_user.id,
             f"Финальный этап для <b>{fio}</b> — заполняю строку "
-            f"в Registro. Напиши 6 строк подряд:\n"
+            f"в Registro. Напиши 5 строк подряд:\n"
             f"1) Пол — M / F{sex_hint}\n"
-            f"2) Departamento (например Cocina, Barra, Managment)\n"
+            f"2) Departamento — ровно одно из: {', '.join(DEPARTAMENTOS)}\n"
             f"3) Fecha de Alta — дд.мм.гггг\n"
-            f"4) Tipo de contrato (например Indefinido, Temporal)\n"
-            f"5) Horario (например 40 h 9-17)\n"
-            f"6) Ссылка на папку сотрудника на Google Диске\n\n"
-            f"Например:\n<code>M\nCocina\n15.09.2026\nIndefinido\n40 h 9-17\n"
+            f"4) Horario (например 40 h 9-17)\n"
+            f"5) Ссылка на папку сотрудника на Google Диске\n\n"
+            f"Например:\n<code>M\nCocina\n15.09.2026\n40 h 9-17\n"
             f"https://drive.google.com/drive/folders/xxxxx</code>",
         )
         return
