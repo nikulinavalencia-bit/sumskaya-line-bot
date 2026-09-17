@@ -442,28 +442,95 @@ def registro_header_row(w) -> int:
     return best_row
 
 
-def registro_append(values_by_header: dict):
+# Правка 7: в заголовках Registro попадаются кириллические буквы, визуально
+# неотличимые от латинских (С, Е, О, Р, А…). Глазом не видно, компьютер не
+# находит совпадение. Приводим их к латинице перед сравнением.
+_CYR_LOOKALIKE = str.maketrans({
+    "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M", "Н": "H", "О": "O",
+    "Р": "P", "С": "C", "Т": "T", "У": "Y", "Х": "X", "І": "I", "Ј": "J",
+    "а": "a", "в": "b", "е": "e", "к": "k", "м": "m", "н": "h", "о": "o",
+    "р": "p", "с": "c", "т": "t", "у": "y", "х": "x", "і": "i", "ј": "j",
+})
+
+
+def _reg_norm(s: str) -> str:
+    return " ".join(str(s or "").translate(_CYR_LOOKALIKE).split()).strip().lower()
+
+
+def registro_last_filled_row(w) -> int:
+    """Последняя строка, где реально есть данные. Ниже неё в таблице остаются
+    отформатированные, но пустые строки — из-за них append_row прыгал вниз."""
+    values = w.get_all_values()
+    for i in range(len(values), 0, -1):
+        if any(str(c).strip() for c in values[i - 1]):
+            return i
+    return 1
+
+
+def registro_append(values_by_header: dict, first_col_value: str = ""):
     """Дописывает строку в Registro, сопоставляя значения с колонками ПО
-    НАЗВАНИЮ (не по номеру) — устойчиво к тому, в каком порядке реально
-    стоят колонки в таблице, и к тому, что настоящие заголовки не в первой
-    строке (сверху баннер/групповые шапки)."""
+    НАЗВАНИЮ (не по номеру) — устойчиво к порядку колонок и к тому, что
+    настоящие заголовки не в первой строке (сверху баннер/групповые шапки).
+
+    Правка 7: сравнение терпит кириллические двойники латинских букв и
+    удлинённые названия колонок («Fecha Nacimiento Titular» вместо «Fecha
+    Nacimiento»). Колонка A, у которой вместо заголовка стоит имя сотрудника,
+    заполняется напрямую переданным ФИО.
+
+    Правка 8: строка пишется строго под последней заполненной, а не через
+    append_row, который улетал вниз через пустые отформатированные строки.
+    """
     w = registro_ws()
     header_row = registro_header_row(w)
     headers = w.row_values(header_row)
-    row = []
     unmatched = dict(values_by_header)
-    for h in headers:
-        h_norm = _norm(h)
-        val = ""
+    row = [""] * len(headers)
+
+    # 1) точное совпадение названия
+    for i, h in enumerate(headers):
+        h_norm = _reg_norm(h)
+        if not h_norm:
+            continue
         for key in list(unmatched.keys()):
-            if _norm(key) == h_norm:
-                val = unmatched.pop(key)
+            if _reg_norm(key) == h_norm:
+                row[i] = unmatched.pop(key)
                 break
-        row.append(val)
-    w.append_row(row, value_input_option="USER_ENTERED")
+
+    # 2) совпадение по началу названия — в таблице колонка может называться
+    #    длиннее, чем поле анкеты
+    for i, h in enumerate(headers):
+        if row[i] != "":
+            continue
+        h_norm = _reg_norm(h)
+        if len(h_norm) < 4:
+            continue
+        for key in list(unmatched.keys()):
+            k_norm = _reg_norm(key)
+            if len(k_norm) >= 4 and (h_norm.startswith(k_norm) or k_norm.startswith(h_norm)):
+                row[i] = unmatched.pop(key)
+                break
+
+    # 3) колонка A: её «заголовок» — имя конкретного сотрудника, сверять не с чем
+    if first_col_value and headers and not row[0]:
+        row[0] = first_col_value
+
+    target_row = registro_last_filled_row(w) + 1
+    last_col = _col_letter(len(headers))
+    # именованные аргументы — чтобы работало и на gspread 5.x, и на 6.x,
+    # где порядок range/values поменялся местами
+    sheets_write_retry(w.update, range_name=f"A{target_row}:{last_col}{target_row}",
+                       values=[row], value_input_option="USER_ENTERED")
     if unmatched:
         log.warning("В Registro не нашлось колонок для: %s", list(unmatched.keys()))
     return unmatched, header_row, headers
+
+
+def _col_letter(n: int) -> str:
+    letters = ""
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters or "A"
 
 
 def applicants_rows(force=False):
@@ -1493,6 +1560,32 @@ def fc_report(loc: str):
 bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
+# ---------------- ФИНАНСОВЫЙ БЛОК (отдельный файл fin_block.py) ----------------
+# Единственная точка подключения. Если файл сломан или отсутствует — бот
+# поднимается без финблока, остальные разделы работают как работали.
+try:
+    import sys as _sys
+    import fin_block
+    fin_block.setup(dp, _sys.modules[__name__])
+except Exception as _e:
+    log.error("fin_block не подключён: %s", _e, exc_info=True)
+
+# Команда /version — бот сам показывает, какая версия кода залита.
+try:
+    import sys as _sys
+    import selfcheck
+    selfcheck.setup(dp, _sys.modules[__name__])
+except Exception as _e:
+    log.error("selfcheck не подключён: %s", _e, exc_info=True)
+
+# Уведомление о новой заявке Solicitud (пункт 10).
+try:
+    import sys as _sys
+    import solicitud_watch
+    solicitud_watch.setup(dp, _sys.modules[__name__])
+except Exception as _e:
+    log.error("solicitud_watch не подключён: %s", _e, exc_info=True)
+
 
 CAPTION_LIMIT = 1000
 
@@ -2127,7 +2220,7 @@ async def on_private_text_registro(m: Message):
     }
 
     try:
-        unmatched, header_row, headers = registro_append(values)
+        unmatched, header_row, headers = registro_append(values, first_col_value=full_name)
     except Exception as e:
         log.error("Ошибка записи в Registro: %s", e)
         await m.answer(f"⚠️ Не удалось записать в Registro: {type(e).__name__}: {e}")
@@ -3018,6 +3111,10 @@ async def cb_hr_next(c: CallbackQuery):
 
     author = c.from_user.full_name if c.from_user else "—"
     set_hr_stage(idx, next_stage, author)
+    # Правка 1: уведомление в Empleados уходит и при ручном продвижении этапа,
+    # а не только когда бот сам нашёл контракт по почте.
+    if next_stage == "Контракт получен, отправлено на подпись":
+        await notify_empleados(str(r.get("ФИО", "")))
     await c.answer("Обновлено")
     await route(c, f"hrc:{idx}")
 
