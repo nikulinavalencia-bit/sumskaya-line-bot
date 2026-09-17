@@ -101,6 +101,8 @@ def build_checks():
          lambda: "Fecha de Alta — дд.мм.гггг" not in whole),
         ("💶 Финблок подключён",
          lambda: bool(getattr(sys.modules.get("fin_block"), "core", None))),
+        ("💶 Справочник поставщиков с правкой в боте",
+         lambda: hasattr(sys.modules.get("fin_block"), "cb_prov_list")),
     ]
 
 
