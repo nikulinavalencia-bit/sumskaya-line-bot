@@ -336,9 +336,11 @@ def add_proveedores_bulk(records: list, author: str) -> int:
     now = core.now_local().strftime("%d.%m.%Y %H:%M")
     rows_ = []
     for r in records:
+        iban = r.get("iban", "")
         rec = {"Поставщик": r.get("name", ""), "Алиасы": r.get("aliases", ""),
-               "NIF": r.get("nif", ""), "IBAN": r.get("iban", ""),
-               "BIC": bic_by_iban(r.get("iban", "")), "Страна": "ES",
+               "NIF": r.get("nif", ""), "IBAN": iban,
+               "BIC": r.get("bic") or bic_by_iban(iban),
+               "Страна": iban[:2].upper() or "ES",
                "Кто добавил": author, "Дата": now}
         rows_.append([rec.get(h, "") for h in order])
     core.sheets_write_retry(w.append_rows, rows_, value_input_option="RAW")
@@ -359,21 +361,31 @@ def find_proveedor_row(name: str):
     return None, None
 
 
-# IBAN -> BIC по коду банка (позиции 5–8 испанского IBAN)
+# IBAN -> BIC по коду банка (позиции 5–8 испанского IBAN).
+# Коды сверены с выгрузкой получателей из Santander.
 BIC_BY_BANK = {
+    "0007": "BESCPTPLXXX",   # Novo Banco
+    "0030": "BSCHESMMXXX",   # Banesto / Santander
     "0049": "BSCHESMMXXX",   # Santander
-    "0075": "POPUESMMXXX",   # Banco Popular / Santander
+    "0073": "OPENESMMXXX",   # Openbank
+    "0075": "BSCHESMMXXX",   # Banco Popular → Santander
     "0081": "BSABESBBXXX",   # Sabadell
     "0128": "BKBKESMMXXX",   # Bankinter
     "0182": "BBVAESMMXXX",   # BBVA
     "0234": "CAHMESMMXXX",   # Banco Caminos
     "1465": "INGDESMMXXX",   # ING
     "1491": "TRIOESMMXXX",   # Triodos
+    "1563": "NTSBESM1XXX",   # N26
+    "1583": "REVOESM2XXX",   # Revolut
     "2038": "CAHMESMMXXX",   # Bankia (ист.)
     "2080": "CAGLESMMXXX",   # Abanca
+    "2095": "BASKES2BXXX",   # Kutxabank
     "2100": "CAIXESBBXXX",   # CaixaBank
+    "3025": "CDENESBBXXX",   # Caixa d'Enginyers
     "3058": "CCRIES2AXXX",   # Cajamar
+    "3110": "CCRIES2A110",   # Caja Rural
     "3159": "BCOEESMM159",   # Caja Rural
+    "3162": "BCOEESMM162",   # Caja Rural
 }
 
 
@@ -1270,8 +1282,9 @@ IMPORT_HELP = (
     "📥 <b>Загрузка списка пачкой</b>\n\n"
     "Пришли список — текстом в сообщении или файлом <code>.csv</code> / <code>.txt</code>.\n"
     "Одна строка на поставщика, поля через <code>|</code>, <code>;</code> или табуляцию:\n\n"
-    "<code>Название | IBAN | NIF | алиасы</code>\n\n"
-    "NIF и алиасы можно не заполнять. Пример:\n"
+    "<code>Название | IBAN | NIF | алиасы | BIC</code>\n\n"
+    "Обязательны только название и IBAN. BIC нужен для иностранных счетов — "
+    "по испанскому IBAN бот подставит его сам. Пример:\n"
     "<code>ACEM CAFE, S.L. | ES2221003464812200104761 | B10467371 | acem, don gallo\n"
     "VORAVINS SL | ES9121000418450200051332 | B98765432 |</code>\n\n"
     "Если поставщик с таким названием уже есть — обновлю ему IBAN и NIF, "
@@ -1311,6 +1324,9 @@ def parse_import(text: str) -> tuple:
         iban = iban_clean(parts[1])
         nif = parts[2].strip() if len(parts) > 2 else ""
         aliases = parts[3].strip() if len(parts) > 3 else ""
+        # пятое поле — BIC. Нужен для иностранных счетов и банков, которых нет
+        # в справочнике кодов: там по IBAN его не вывести.
+        bic = parts[4].strip().upper() if len(parts) > 4 else ""
         if not name:
             errors.append(f"{line[:40]} — нет названия")
             continue
@@ -1319,7 +1335,8 @@ def parse_import(text: str) -> tuple:
         if not iban_valid(iban):
             errors.append(f"{name[:30]} — IBAN не проходит проверку")
             continue
-        records.append({"name": name, "iban": iban, "nif": nif, "aliases": aliases})
+        records.append({"name": name, "iban": iban, "nif": nif,
+                        "aliases": aliases, "bic": bic})
     return records, errors
 
 
@@ -1336,7 +1353,9 @@ async def apply_import(records: list, author: str) -> tuple:
         changes = {}
         if iban_clean(old.get("IBAN")) != rec["iban"]:
             changes["IBAN"] = rec["iban"]
-            changes["BIC"] = bic_by_iban(rec["iban"])
+            changes["BIC"] = rec.get("bic") or bic_by_iban(rec["iban"])
+        elif rec.get("bic") and str(old.get("BIC", "")).strip() != rec["bic"]:
+            changes["BIC"] = rec["bic"]
         if rec["nif"] and str(old.get("NIF", "")).strip() != rec["nif"]:
             changes["NIF"] = rec["nif"]
         if changes:
