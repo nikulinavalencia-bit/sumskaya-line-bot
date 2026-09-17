@@ -22,6 +22,7 @@
 
 import os
 import html
+import asyncio
 import logging
 from time import time
 
@@ -37,6 +38,15 @@ _routes_done = False
 
 # 10.1 — видит ли патрон финблок целиком наравне с фин. директором
 PATRON_FULL_ACCESS = True
+
+# Если распознанная фактура полностью сходится — бот сам ставит «готов к ремесе»
+# и ничего не спрашивает. Подтверждение только там, где чего-то не хватает.
+AUTO_APPROVE = True
+# Первый платёж поставщику, которого ещё нет в справочнике, всё же показываем
+# человеку: именно здесь ловится подмена реквизитов.
+AUTO_APPROVE_NEW_SUPPLIER = False
+# Допуск при сверке «база + IVA = итог», в евро
+SUM_TOLERANCE = 0.02
 
 # Роль фин. директора. Ставится в таблице Users в колонке «Роль» ровно этим текстом.
 ROLE_FINDIR = "Фин. директор"
@@ -74,6 +84,7 @@ FIN_HEADERS = {
 # ---------------- СТАТУСЫ ----------------
 
 ST_NEW = "новый"
+ST_RECOGNIZED = "распознан"
 ST_NEED_IBAN = "нужен IBAN"
 ST_READY = "готов к ремесе"
 ST_EXCLUDED = "исключён"
@@ -81,11 +92,12 @@ ST_IN_REMESA = "в ремесе"
 ST_SENT = "отправлено в банк"
 ST_PAID = "оплачено"
 
-UNPAID = (ST_NEW, ST_NEED_IBAN, ST_READY, ST_EXCLUDED)
+UNPAID = (ST_NEW, ST_RECOGNIZED, ST_NEED_IBAN, ST_READY, ST_EXCLUDED)
 PAID_QUEUE = (ST_IN_REMESA, ST_SENT)
 
 ST_EMOJI = {
     ST_NEW: "🆕",
+    ST_RECOGNIZED: "🔍",
     ST_NEED_IBAN: "⚠️",
     ST_READY: "✅",
     ST_EXCLUDED: "🚫",
@@ -474,14 +486,21 @@ async def on_doc(m: Message):
 
     if m.photo:
         file_id, ftype, fname = m.photo[-1].file_id, "photo", "фото"
+        mime = "image/jpeg"
     elif m.document:
         file_id, ftype = m.document.file_id, "document"
         fname = m.document.file_name or "файл"
+        mime = str(getattr(m.document, "mime_type", "") or "").strip()
+        if not mime:
+            low = fname.lower()
+            mime = ("application/pdf" if low.endswith(".pdf")
+                    else "image/png" if low.endswith(".png")
+                    else "image/jpeg")
     else:
         return
 
     _pending[uid] = {
-        "ts": time(), "file_id": file_id, "ftype": ftype, "fname": fname,
+        "ts": time(), "file_id": file_id, "ftype": ftype, "fname": fname, "mime": mime,
         "chat_id": m.chat.id, "msg_id": m.message_id,
         "author": m.from_user.full_name, "text": (m.caption or "")[:500],
     }
@@ -551,14 +570,188 @@ async def cb_just(c: CallbackQuery):
         await c.answer("Не смог записать в таблицу, попробуй ещё раз", show_alert=True)
         return
 
+    ocr_note = "\n\n🔍 Читаю данные с документа, это займёт несколько секунд." \
+        if ocr_enabled() else ""
     await core.take_over(
         c,
         f"✅ Документ принят\n\n{loc_label(p['loc'])}\n"
         f"Хустификанте: <b>{'нужен' if need else 'не нужен'}</b>\n"
-        f"Номер: <code>{fid}</code>",
+        f"Номер: <code>{fid}</code>{ocr_note}",
         kb([[btn("💳 Загрузить ещё", "fin:up")]]))
     await c.answer()
-    await notify_findirs(rec)
+    if ocr_enabled():
+        # не дёргаем фин. директора дважды: сообщением будет результат распознавания
+        asyncio.create_task(recognize_later(fid, p["file_id"], p.get("mime", "")))
+    else:
+        await notify_findirs(rec)
+
+
+# ---------------- РАСПОЗНАВАНИЕ ФАКТУРЫ ----------------
+
+def ocr_enabled() -> bool:
+    try:
+        import invoice_ocr
+        return invoice_ocr.enabled()
+    except Exception:
+        return False
+
+
+async def recognize_later(fid: str, file_id: str, mime: str):
+    """Фоновая задача: скачать документ, распознать, заполнить строку,
+    показать фин. директору карточку с кнопкой подтверждения."""
+    try:
+        import invoice_ocr
+    except Exception as ex:
+        log.warning("модуль распознавания недоступен: %s", ex)
+        return
+
+    try:
+        buf = await core.bot.download(file_id)
+        data = buf.read()
+    except Exception as ex:
+        log.warning("не смог скачать документ %s: %s", fid, ex)
+        await ocr_report(fid, None, f"не смогла скачать файл ({type(ex).__name__})")
+        return
+
+    try:
+        res = await asyncio.to_thread(invoice_ocr.recognize, data, mime or "image/jpeg")
+    except Exception as ex:
+        log.exception("распознавание упало: %s", ex)
+        await ocr_report(fid, None, f"{type(ex).__name__}: {ex}")
+        return
+
+    if not res.get("ok"):
+        await ocr_report(fid, None, res.get("error", "не получилось"))
+        return
+
+    idx, r = find_factura(fid)
+    if not r:
+        log.warning("строка %s исчезла, пока шло распознавание", fid)
+        return
+
+    name = res.get("proveedor", "")
+    prov = find_proveedor(name) if name else None
+    prov_iban = iban_clean(prov.get("IBAN")) if prov else ""
+    doc_iban = iban_clean(res.get("iban"))
+    iban = prov_iban or (doc_iban if iban_valid(doc_iban) else "")
+
+    total = res.get("total") or 0.0
+    base, iva = res.get("base") or 0.0, res.get("iva") or 0.0
+
+    # Чего не хватает, чтобы платить без вопросов
+    blockers = []
+    if not name:
+        blockers.append("поставщик не распознан")
+    if not total:
+        blockers.append("сумма не распознана")
+    if not iban:
+        blockers.append("нет IBAN")
+    elif not iban_valid(iban):
+        blockers.append("IBAN не проходит проверку")
+    if doc_iban and prov_iban and doc_iban != prov_iban:
+        blockers.append("🔴 IBAN в фактуре не совпадает со справочником — "
+                        "проверь реквизиты с поставщиком")
+    if base and iva and total and abs(base + iva - total) > SUM_TOLERANCE:
+        blockers.append(f"не сходится арифметика: {money(base)} + {money(iva)} "
+                        f"≠ {money(total)}")
+    if not res.get("numero"):
+        blockers.append("нет номера фактуры")
+    if not res.get("fecha"):
+        blockers.append("нет даты фактуры")
+    if name and not prov and not AUTO_APPROVE_NEW_SUPPLIER:
+        blockers.append("новый поставщик — реквизиты ещё не сверялись")
+
+    auto = AUTO_APPROVE and not blockers
+    if auto:
+        status = ST_READY
+    elif not total:
+        status = ST_NEW
+    elif not iban_valid(iban):
+        status = ST_NEED_IBAN
+    else:
+        status = ST_RECOGNIZED
+    fields = {
+        "Поставщик": name, "NIF": res.get("nif", ""), "IBAN": iban,
+        "Номер": res.get("numero", ""), "Дата фактуры": res.get("fecha", ""),
+        "База": f"{res.get('base', 0):.2f}" if res.get("base") else "",
+        "IVA": f"{res.get('iva', 0):.2f}" if res.get("iva") else "",
+        "Total": f"{total:.2f}" if total else "",
+        "Статус": status,
+    }
+    try:
+        set_fields(FACTURAS_WS, idx, fields)
+    except Exception as ex:
+        log.exception("не смог записать распознанное: %s", ex)
+        await ocr_report(fid, None, "таблица не приняла запись")
+        return
+
+    await ocr_report(fid, res, None, blockers, auto=auto)
+
+
+async def ocr_report(fid: str, res, error: str = None, blockers: list = None,
+                     auto: bool = False):
+    _, r = find_factura(fid)
+    if not r:
+        return
+    if error:
+        text = (f"🔍 <b>Не удалось распознать</b>\n"
+                f"Фактура <code>{e(fid)}</code>\n\n{e(error)}\n\n"
+                f"Заполни данные вручную.")
+        rows_ = [[btn("✏️ Заполнить вручную", f"fin:fill:{fid}")]]
+    elif auto:
+        # всё сошлось — ничего не спрашиваем, просто ставим в известность
+        text = (f"✅ <b>{e(r.get('Поставщик'))}</b> · {money(r.get('Total'))}\n"
+                f"{loc_label(str(r.get('Локаль', '')).strip())} · "
+                f"фактура {e(r.get('Номер'))} от {e(r.get('Дата фактуры'))}\n\n"
+                f"Распознано и поставлено в ремесу.")
+        rows_ = [[btn("Открыть", f"fin:doc:{fid}")]]
+    else:
+        text = "🔍 <b>Нужна твоя проверка</b>\n\n" + card_text(r)
+        if blockers:
+            text += "\n\n" + "\n".join("⚠️ " + w for w in blockers)
+        rows_ = [[btn("✅ Подтвердить", f"fin:ok:{fid}")],
+                 [btn("✏️ Исправить", f"fin:fill:{fid}")],
+                 [btn("📎 Показать документ", f"fin:show:{fid}")]]
+    markup = InlineKeyboardMarkup(inline_keyboard=rows_)
+    for uid in findir_ids():
+        try:
+            await core.bot.send_message(uid, text[:4000], reply_markup=markup)
+        except Exception as ex:
+            log.warning("отчёт о распознавании не ушёл %s: %s", uid, ex)
+
+
+async def cb_confirm(c: CallbackQuery):
+    """Фин. директор подтверждает распознанное — фактура идёт в ремесу."""
+    u = core.guard(c)
+    if not u or not is_findir(u, c.from_user.id):
+        await deny(c)
+        return
+    fid = c.data.split(":")[2]
+    idx, r = find_factura(fid)
+    if not r:
+        await c.answer("Документ не найден", show_alert=True)
+        return
+
+    iban = iban_clean(r.get("IBAN"))
+    name = str(r.get("Поставщик", "")).strip()
+    total = parse_amount(r.get("Total"))
+    if not total:
+        await c.answer("Нет суммы — заполни вручную", show_alert=True)
+        return
+    if not iban_valid(iban):
+        set_fields(FACTURAS_WS, idx, {"Статус": ST_NEED_IBAN})
+        await _render_card(c, fid, "Нужен IBAN")
+        return
+
+    set_fields(FACTURAS_WS, idx, {"Статус": ST_READY})
+    note = "Готово к ремесе"
+    if name and not find_proveedor(name):
+        try:
+            add_proveedor(name, iban, str(r.get("NIF", "")), c.from_user.full_name)
+            note = "Готово к ремесе · поставщик добавлен в справочник"
+        except Exception as ex:
+            log.warning("поставщик не добавлен: %s", ex)
+    await _render_card(c, fid, note)
 
 
 async def notify_findirs(rec: dict):
@@ -703,9 +896,11 @@ async def _render_card(c: CallbackQuery, fid: str, note: str = None) -> bool:
 
     rows_ = [[btn("📎 Показать документ", f"fin:show:{fid}")],
              [btn("✏️ Заполнить данные", f"fin:fill:{fid}")]]
+    if st in (ST_RECOGNIZED, ST_NEED_IBAN):
+        rows_.insert(0, [btn("✅ Подтвердить", f"fin:ok:{fid}")])
     if st == ST_EXCLUDED:
         rows_.append([btn("↩️ Вернуть в очередь", f"fin:inc:{fid}")])
-    elif st in (ST_NEW, ST_NEED_IBAN, ST_READY):
+    elif st in (ST_NEW, ST_RECOGNIZED, ST_NEED_IBAN, ST_READY):
         rows_.append([btn("🚫 Исключить из ремесы", f"fin:exc:{fid}")])
     await core.take_over(c, card_text(r), kb(rows_))
     await c.answer(note or "")
@@ -1331,7 +1526,8 @@ async def cb_remesa(c: CallbackQuery):
         return
     core.nav_push(c.from_user.id, c.data)
 
-    items = [(idx, r) for idx, r in facturas(loc, (ST_NEW, ST_NEED_IBAN, ST_READY))]
+    items = [(idx, r) for idx, r in
+             facturas(loc, (ST_NEW, ST_RECOGNIZED, ST_NEED_IBAN, ST_READY))]
     ready = [(idx, r) for idx, r in items if str(r.get("Статус")).strip() == ST_READY]
     not_ready = [r for _, r in items if str(r.get("Статус")).strip() != ST_READY]
     total = sum(parse_amount(r.get("Total")) for _, r in ready)
@@ -1346,7 +1542,8 @@ async def cb_remesa(c: CallbackQuery):
         lines.append("Готовых к ремесе документов нет — заполни данные в «Неоплаченных».")
     if not_ready:
         lines.append("")
-        lines.append(f"⚠️ Не готовы ({len(not_ready)}): нет суммы или IBAN.")
+        lines.append(f"⚠️ Не готовы ({len(not_ready)}): нет суммы, нет IBAN "
+                     f"или ждут подтверждения.")
     lines.append("")
     lines.append("Выгрузка XML + 2 PDF включится, как только будут ответы по счёту списания, "
                  "концепту платежа и дате исполнения.")
@@ -1380,6 +1577,7 @@ CALLBACKS = [
     ("fin:arch:", cb_archive, False),
     ("fin:rem:", cb_remesa, False),
     ("fin:doc:", cb_card, False),
+    ("fin:ok:", cb_confirm, False),
     ("fin:show:", cb_show, False),
     ("fin:fill:", cb_fill, False),
     ("fin:exc:", cb_exclude, False),
