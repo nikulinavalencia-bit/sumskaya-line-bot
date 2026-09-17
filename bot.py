@@ -359,12 +359,13 @@ def ensure_headers():
     for name, cols in HEADERS.items():
         w = ws(name)
         cur = w.row_values(1)
+        # именованные аргументы — в gspread 6 порядок range/values поменялся
         if not cur:
-            w.update("A1", [cols])
+            w.update(range_name="A1", values=[cols])
             continue
         missing = [c for c in cols if c not in cur]
         if missing:
-            w.update(f"{chr(65 + len(cur))}1", [missing])
+            w.update(range_name=f"{chr(65 + len(cur))}1", values=[missing])
 
 
 def rows(name: str, force=False):
