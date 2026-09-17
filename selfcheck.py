@@ -103,7 +103,16 @@ def build_checks():
          lambda: bool(getattr(sys.modules.get("fin_block"), "core", None))),
         ("💶 Справочник поставщиков с правкой в боте",
          lambda: hasattr(sys.modules.get("fin_block"), "cb_prov_list")),
+        ("🔍 Распознавание фактур включено (есть ключ Gemini)", _ocr_on),
     ]
+
+
+def _ocr_on() -> bool:
+    try:
+        import invoice_ocr
+        return invoice_ocr.enabled()
+    except Exception:
+        return False
 
 
 def _sheets_line() -> str:
