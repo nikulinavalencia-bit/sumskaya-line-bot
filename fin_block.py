@@ -100,6 +100,13 @@ _await_doc = {}     # uid -> ts             : ждём фото/PDF докуме
 _pending = {}       # uid -> dict           : загруженный док, ждёт локаль/галочку
 _await_fill = {}    # uid -> (fid, ts)      : ждём текст с данными фактуры
 
+# справочник поставщиков
+_await_prov_field = {}   # uid -> (row, поле, ts) : ждём новое значение поля
+_await_prov_new = {}     # uid -> ts             : ждём данные нового поставщика
+_await_prov_import = {}  # uid -> ts             : ждём список пачкой (текст или файл)
+_await_prov_find = {}    # uid -> ts             : ждём строку поиска
+_prov_query = {}         # uid -> строка поиска
+
 
 def _fresh(ts) -> bool:
     return bool(ts) and (time() - ts) < STATE_TTL
@@ -109,6 +116,10 @@ def _clear(uid: int):
     _await_doc.pop(uid, None)
     _pending.pop(uid, None)
     _await_fill.pop(uid, None)
+    _await_prov_field.pop(uid, None)
+    _await_prov_new.pop(uid, None)
+    _await_prov_import.pop(uid, None)
+    _await_prov_find.pop(uid, None)
 
 
 # ---------------- МЕЛКИЕ ХЕЛПЕРЫ ----------------
@@ -251,22 +262,22 @@ def _a1(row: int, col: int) -> str:
     return f"{letters}{row}"
 
 
-def set_fields(row_idx: int, values: dict):
+def set_fields(ws_name: str, row_idx: int, values: dict):
     """Точечно обновляет ячейки строки — одним batch-запросом, чтобы не жечь
     лимит Google API. Чужие строки, шапку и форматирование не трогает."""
-    cols = col_index(FACTURAS_WS)
-    w = core.ws(FACTURAS_WS)
+    cols = col_index(ws_name)
+    w = core.ws(ws_name)
     data = []
     for header, val in values.items():
         col = cols.get(header)
         if not col:
-            log.warning("нет колонки %s в %s", header, FACTURAS_WS)
+            log.warning("нет колонки %s в %s", header, ws_name)
             continue
         data.append({"range": _a1(row_idx, col), "values": [[val]]})
     if not data:
         return
     core.sheets_write_retry(w.batch_update, data, value_input_option="RAW")
-    core.drop_cache(FACTURAS_WS)
+    core.drop_cache(ws_name)
 
 
 def proveedores(force=False) -> list:
@@ -291,15 +302,49 @@ def find_proveedor(name: str):
     return None
 
 
-def add_proveedor(name: str, iban: str, nif: str, author: str):
+def add_proveedor(name: str, iban: str, nif: str, author: str, aliases: str = "",
+                  locales: str = "", comment: str = ""):
     w = core.ws(PROVEEDORES_WS)
     order = FIN_HEADERS[PROVEEDORES_WS]
-    rec = {"Поставщик": name, "NIF": nif, "IBAN": iban, "BIC": bic_by_iban(iban),
-           "Страна": "ES", "Кто добавил": author,
+    rec = {"Поставщик": name, "Алиасы": aliases, "NIF": nif, "IBAN": iban,
+           "BIC": bic_by_iban(iban), "Страна": "ES", "Локали": locales,
+           "Комментарий": comment, "Кто добавил": author,
            "Дата": core.now_local().strftime("%d.%m.%Y %H:%M")}
     core.sheets_write_retry(w.append_row, [rec.get(h, "") for h in order],
                             value_input_option="RAW")
     core.drop_cache(PROVEEDORES_WS)
+
+
+def add_proveedores_bulk(records: list, author: str) -> int:
+    """Пачкой — один запрос к таблице вместо одного на каждого поставщика."""
+    if not records:
+        return 0
+    w = core.ws(PROVEEDORES_WS)
+    order = FIN_HEADERS[PROVEEDORES_WS]
+    now = core.now_local().strftime("%d.%m.%Y %H:%M")
+    rows_ = []
+    for r in records:
+        rec = {"Поставщик": r.get("name", ""), "Алиасы": r.get("aliases", ""),
+               "NIF": r.get("nif", ""), "IBAN": r.get("iban", ""),
+               "BIC": bic_by_iban(r.get("iban", "")), "Страна": "ES",
+               "Кто добавил": author, "Дата": now}
+        rows_.append([rec.get(h, "") for h in order])
+    core.sheets_write_retry(w.append_rows, rows_, value_input_option="RAW")
+    core.drop_cache(PROVEEDORES_WS)
+    return len(rows_)
+
+
+def proveedores_indexed(force=False) -> list:
+    """[(row_idx, запись)] — row_idx это номер строки листа."""
+    return [(i + 2, r) for i, r in enumerate(proveedores(force=force))]
+
+
+def find_proveedor_row(name: str):
+    n = norm(name)
+    for idx, r in proveedores_indexed():
+        if norm(r.get("Поставщик")) == n:
+            return idx, r
+    return None, None
 
 
 # IBAN -> BIC по коду банка (позиции 5–8 испанского IBAN)
@@ -373,6 +418,11 @@ async def _root_screen(c: CallbackQuery, u):
 
     rows_ = [[btn(f"{loc_label(code)}", f"fin:l:{code}")] for code in core.LOCALES]
     rows_.append([btn("💳 Оплата — загрузить документ", "fin:up")])
+    try:
+        n_prov = len(proveedores())
+    except Exception:
+        n_prov = 0
+    rows_.append([btn(f"📇 Поставщики ({n_prov})", "fin:prov")])
     n = len(facturas(statuses=UNPAID))
     await core.take_over(c, f"{head}\n\nНеоплаченных документов всего: <b>{n}</b>", kb(rows_))
 
@@ -769,7 +819,7 @@ async def on_fill_text(m: Message):
     _await_fill.pop(uid, None)
 
     try:
-        set_fields(idx, {
+        set_fields(FACTURAS_WS, idx, {
             "Поставщик": name, "Номер": numero, "Дата фактуры": fecha,
             "Total": f"{total:.2f}", "IBAN": iban, "NIF": nif, "Статус": status,
         })
@@ -801,7 +851,7 @@ async def _set_status(c: CallbackQuery, status: str, note: str):
     if not r:
         await c.answer("Документ не найден", show_alert=True)
         return
-    set_fields(idx, {"Статус": status})
+    set_fields(FACTURAS_WS, idx, {"Статус": status})
     await _render_card(c, fid, note)
 
 
@@ -811,6 +861,461 @@ async def cb_exclude(c: CallbackQuery):
 
 async def cb_include(c: CallbackQuery):
     await _set_status(c, ST_READY, "Вернул в очередь")
+
+
+# ---------------- СПРАВОЧНИК ПОСТАВЩИКОВ ----------------
+
+PROV_PAGE = 12          # поставщиков на экране
+
+PROV_FIELDS = {
+    "iban": ("IBAN", "Пришли новый IBAN одной строкой. Проверю контрольное число "
+                     "и сам подставлю BIC."),
+    "nif": ("NIF", "Пришли NIF / CIF одной строкой."),
+    "name": ("Поставщик", "Пришли новое название поставщика одной строкой."),
+    "alias": ("Алиасы", "Пришли алиасы через запятую — так поставщик будет "
+                        "узнаваться, как бы его ни написали в фактуре."),
+    "loc": ("Локали", "Пришли локали через запятую: Reina, Francia, Panadería, Boi Boi."),
+    "note": ("Комментарий", "Пришли комментарий одной строкой."),
+}
+
+
+def prov_label(r: dict) -> str:
+    name = str(r.get("Поставщик") or "без названия").strip()[:26]
+    iban = iban_clean(r.get("IBAN"))
+    mark = "✅" if iban_valid(iban) else ("⚠️" if iban else "➖")
+    return f"{mark} {name}"
+
+
+def prov_card(r: dict) -> str:
+    iban = iban_clean(r.get("IBAN"))
+    if not iban:
+        iban_line = "IBAN: <b>не заполнен</b>"
+    elif iban_valid(iban):
+        iban_line = f"IBAN: <code>{e(iban)}</code> ✅"
+    else:
+        iban_line = f"IBAN: <code>{e(iban)}</code>\n⚠️ <b>не проходит проверку — опечатка</b>"
+    lines = [
+        f"📇 <b>{e(r.get('Поставщик') or 'Без названия')}</b>",
+        "",
+        f"NIF: {e(r.get('NIF') or '—')}",
+        iban_line,
+        f"BIC: {e(r.get('BIC') or '—')}",
+        f"Алиасы: {e(r.get('Алиасы') or '—')}",
+        f"Локали: {e(r.get('Локали') or 'все')}",
+    ]
+    if str(r.get("Комментарий") or "").strip():
+        lines.append(f"Комментарий: {e(r.get('Комментарий'))}")
+    who, when = str(r.get("Кто добавил") or "").strip(), str(r.get("Дата") or "").strip()
+    if who or when:
+        lines += ["", f"<i>Добавил: {e(who or '—')} · {e(when or '—')}</i>"]
+    return "\n".join(lines)
+
+
+async def _prov_list_screen(c: CallbackQuery, page: int = 0):
+    uid = c.from_user.id
+    query = _prov_query.get(uid, "")
+    items = proveedores_indexed()
+    if query:
+        q = norm(query)
+        items = [(i, r) for i, r in items
+                 if q in norm(r.get("Поставщик")) or q in norm(r.get("Алиасы"))
+                 or q in norm(r.get("NIF")) or q in norm(r.get("IBAN"))]
+
+    pages = max(1, (len(items) + PROV_PAGE - 1) // PROV_PAGE)
+    page = max(0, min(page, pages - 1))
+    chunk = items[page * PROV_PAGE:(page + 1) * PROV_PAGE]
+
+    bad = sum(1 for _, r in proveedores_indexed() if not iban_valid(r.get("IBAN")))
+    head = ["📇 <b>Справочник поставщиков</b>", ""]
+    if query:
+        head.append(f"Поиск: «{e(query)}» — найдено {len(items)}")
+    else:
+        head.append(f"Всего: <b>{len(items)}</b>" + (f" · без нормального IBAN: {bad}" if bad else ""))
+    if pages > 1:
+        head.append(f"Страница {page + 1} из {pages}")
+    if not items:
+        head.append("")
+        head.append("Пусто. Добавь первого поставщика или загрузи список пачкой.")
+
+    rows_ = [[btn(prov_label(r), f"fin:prov:{idx}")] for idx, r in chunk]
+    nav = []
+    if page > 0:
+        nav.append(btn("⬅️", f"fin:provp:{page - 1}"))
+    if page < pages - 1:
+        nav.append(btn("➡️", f"fin:provp:{page + 1}"))
+    if nav:
+        rows_.append(nav)
+    rows_.append([btn("🔎 Поиск", "fin:provfind"),
+                  btn("🧹 Сбросить" if query else "➕ Добавить",
+                      "fin:provreset" if query else "fin:provadd")])
+    if query:
+        rows_.append([btn("➕ Добавить", "fin:provadd")])
+    rows_.append([btn("📥 Загрузить список пачкой", "fin:provimp")])
+    await core.take_over(c, "\n".join(head), kb(rows_))
+
+
+async def cb_prov_list(c: CallbackQuery):
+    u = core.guard(c)
+    if not u or not is_findir(u, c.from_user.id):
+        await deny(c)
+        return
+    core.nav_push(c.from_user.id, "fin:prov")
+    await _prov_list_screen(c, 0)
+    await c.answer()
+
+
+async def cb_prov_page(c: CallbackQuery):
+    u = core.guard(c)
+    if not u or not is_findir(u, c.from_user.id):
+        await deny(c)
+        return
+    try:
+        page = int(c.data.split(":")[2])
+    except (IndexError, ValueError):
+        page = 0
+    await _prov_list_screen(c, page)
+    await c.answer()
+
+
+async def cb_prov_reset(c: CallbackQuery):
+    u = core.guard(c)
+    if not u or not is_findir(u, c.from_user.id):
+        await deny(c)
+        return
+    _prov_query.pop(c.from_user.id, None)
+    await _prov_list_screen(c, 0)
+    await c.answer("Поиск сброшен")
+
+
+async def _prov_card_screen(c: CallbackQuery, row: int, note: str = None) -> bool:
+    found = None
+    for idx, r in proveedores_indexed():
+        if idx == row:
+            found = r
+            break
+    if not found:
+        return False
+    core.nav_push(c.from_user.id, f"fin:prov:{row}")
+    rows_ = [
+        [btn("✏️ IBAN", f"fin:provf:{row}:iban"), btn("✏️ NIF", f"fin:provf:{row}:nif")],
+        [btn("✏️ Название", f"fin:provf:{row}:name"),
+         btn("✏️ Алиасы", f"fin:provf:{row}:alias")],
+        [btn("✏️ Локали", f"fin:provf:{row}:loc"),
+         btn("✏️ Комментарий", f"fin:provf:{row}:note")],
+        [btn("📇 К списку", "fin:prov")],
+    ]
+    await core.take_over(c, prov_card(found), kb(rows_))
+    await c.answer(note or "")
+    return True
+
+
+async def cb_prov_card(c: CallbackQuery):
+    u = core.guard(c)
+    if not u or not is_findir(u, c.from_user.id):
+        await deny(c)
+        return
+    try:
+        row = int(c.data.split(":")[2])
+    except (IndexError, ValueError):
+        await c.answer()
+        return
+    if not await _prov_card_screen(c, row):
+        await c.answer("Поставщик не найден", show_alert=True)
+
+
+async def cb_prov_field(c: CallbackQuery):
+    u = core.guard(c)
+    if not u or not is_findir(u, c.from_user.id):
+        await deny(c)
+        return
+    parts = c.data.split(":")
+    try:
+        row, field = int(parts[2]), parts[3]
+    except (IndexError, ValueError):
+        await c.answer()
+        return
+    if field not in PROV_FIELDS:
+        await c.answer()
+        return
+    _await_prov_field[c.from_user.id] = (row, field, time())
+    header, hint = PROV_FIELDS[field]
+    await core.take_over(c, f"✏️ <b>{e(header)}</b>\n\n{hint}",
+                         kb([[btn("❌ Отмена", f"fin:prov:{row}")]], back=False))
+    await c.answer()
+
+
+async def cb_prov_add(c: CallbackQuery):
+    u = core.guard(c)
+    if not u or not is_findir(u, c.from_user.id):
+        await deny(c)
+        return
+    _await_prov_new[c.from_user.id] = time()
+    await core.take_over(
+        c,
+        "➕ <b>Новый поставщик</b>\n\nПришли одним сообщением, по строке на пункт:\n\n"
+        "<code>Название\nIBAN\nNIF (необязательно)\nалиасы через запятую (необязательно)</code>\n\n"
+        "Например:\n<code>ACEM CAFE, S.L.\nES2221003464812200104761\nB10467371\n"
+        "acem, don gallo</code>",
+        kb([[btn("❌ Отмена", "fin:prov")]], back=False))
+    await c.answer()
+
+
+async def cb_prov_find(c: CallbackQuery):
+    u = core.guard(c)
+    if not u or not is_findir(u, c.from_user.id):
+        await deny(c)
+        return
+    _await_prov_find[c.from_user.id] = time()
+    await core.take_over(c, "🔎 Пришли кусок названия, NIF или IBAN — найду.",
+                         kb([[btn("❌ Отмена", "fin:prov")]], back=False))
+    await c.answer()
+
+
+IMPORT_HELP = (
+    "📥 <b>Загрузка списка пачкой</b>\n\n"
+    "Пришли список — текстом в сообщении или файлом <code>.csv</code> / <code>.txt</code>.\n"
+    "Одна строка на поставщика, поля через <code>|</code>, <code>;</code> или табуляцию:\n\n"
+    "<code>Название | IBAN | NIF | алиасы</code>\n\n"
+    "NIF и алиасы можно не заполнять. Пример:\n"
+    "<code>ACEM CAFE, S.L. | ES2221003464812200104761 | B10467371 | acem, don gallo\n"
+    "VORAVINS SL | ES9121000418450200051332 | B98765432 |</code>\n\n"
+    "Если поставщик с таким названием уже есть — обновлю ему IBAN и NIF, "
+    "дубликат не создам. Строки с непонятным IBAN пропущу и покажу списком."
+)
+
+
+async def cb_prov_import(c: CallbackQuery):
+    u = core.guard(c)
+    if not u or not is_findir(u, c.from_user.id):
+        await deny(c)
+        return
+    _await_prov_import[c.from_user.id] = time()
+    await core.take_over(c, IMPORT_HELP, kb([[btn("❌ Отмена", "fin:prov")]], back=False))
+    await c.answer()
+
+
+def split_import_line(line: str) -> list:
+    for sep in ("|", "\t", ";"):
+        if sep in line:
+            return [p.strip() for p in line.split(sep)]
+    return [line.strip()]
+
+
+def parse_import(text: str) -> tuple:
+    """-> (записи, ошибки). Шапку таблицы пропускаем сами."""
+    records, errors = [], []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        parts = split_import_line(line)
+        if len(parts) < 2:
+            errors.append(f"{line[:40]} — нет IBAN")
+            continue
+        name = parts[0].strip()
+        iban = iban_clean(parts[1])
+        nif = parts[2].strip() if len(parts) > 2 else ""
+        aliases = parts[3].strip() if len(parts) > 3 else ""
+        if not name:
+            errors.append(f"{line[:40]} — нет названия")
+            continue
+        if norm(name) in ("поставщик", "nombre", "proveedor", "название"):
+            continue          # шапка таблицы
+        if not iban_valid(iban):
+            errors.append(f"{name[:30]} — IBAN не проходит проверку")
+            continue
+        records.append({"name": name, "iban": iban, "nif": nif, "aliases": aliases})
+    return records, errors
+
+
+async def apply_import(records: list, author: str) -> tuple:
+    """Новых добавляем пачкой, существующим обновляем реквизиты. -> (добавлено, обновлено)"""
+    existing = {norm(r.get("Поставщик")): (idx, r) for idx, r in proveedores_indexed(force=True)}
+    fresh, updated = [], 0
+    for rec in records:
+        hit = existing.get(norm(rec["name"]))
+        if not hit:
+            fresh.append(rec)
+            continue
+        idx, old = hit
+        changes = {}
+        if iban_clean(old.get("IBAN")) != rec["iban"]:
+            changes["IBAN"] = rec["iban"]
+            changes["BIC"] = bic_by_iban(rec["iban"])
+        if rec["nif"] and str(old.get("NIF", "")).strip() != rec["nif"]:
+            changes["NIF"] = rec["nif"]
+        if changes:
+            changes["Дата"] = core.now_local().strftime("%d.%m.%Y %H:%M")
+            changes["Кто добавил"] = author
+            set_fields(PROVEEDORES_WS, idx, changes)
+            updated += 1
+    added = add_proveedores_bulk(fresh, author) if fresh else 0
+    return added, updated
+
+
+async def on_prov_text(m: Message):
+    """Один обработчик на все текстовые ответы внутри справочника."""
+    uid = m.from_user.id
+
+    # 1) поиск
+    if _fresh(_await_prov_find.get(uid)):
+        _await_prov_find.pop(uid, None)
+        _prov_query[uid] = (m.text or "").strip()[:40]
+        found = len([1 for _, r in proveedores_indexed()
+                     if norm(_prov_query[uid]) in norm(r.get("Поставщик"))
+                     or norm(_prov_query[uid]) in norm(r.get("Алиасы"))])
+        await m.answer(f"🔎 Нашла: <b>{found}</b>. Открой справочник — список уже отфильтрован.",
+                       reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                           [btn("📇 Справочник", "fin:prov")]]))
+        return
+
+    # 2) правка одного поля
+    state = _await_prov_field.get(uid)
+    if state and _fresh(state[2]):
+        row, field, _ = state
+        header, _hint = PROV_FIELDS[field]
+        value = (m.text or "").strip()
+        changes = {}
+
+        if field == "iban":
+            value = iban_clean(value)
+            if not iban_valid(value):
+                await m.answer("IBAN не проходит проверку контрольного числа. "
+                               "Проверь и пришли снова.")
+                return
+            changes = {"IBAN": value, "BIC": bic_by_iban(value)}
+        elif field == "name":
+            if not value:
+                await m.answer("Название не может быть пустым.")
+                return
+            other, _r = find_proveedor_row(value)
+            if other and other != row:
+                await m.answer("Поставщик с таким названием уже есть в справочнике.")
+                return
+            changes = {"Поставщик": value}
+        else:
+            changes = {header: value}
+
+        changes["Дата"] = core.now_local().strftime("%d.%m.%Y %H:%M")
+        changes["Кто добавил"] = m.from_user.full_name
+        _await_prov_field.pop(uid, None)
+        try:
+            set_fields(PROVEEDORES_WS, row, changes)
+        except Exception as ex:
+            log.exception("не смог обновить поставщика: %s", ex)
+            await m.answer("Не смог записать в таблицу, попробуй ещё раз.")
+            return
+        found = None
+        for idx, r in proveedores_indexed(force=True):
+            if idx == row:
+                found = r
+                break
+        await m.answer((prov_card(found) if found else "Сохранено ✅"),
+                       reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                           [btn("📇 К списку", "fin:prov")]]))
+        return
+
+    # 3) новый поставщик
+    if _fresh(_await_prov_new.get(uid)):
+        parts = [p.strip() for p in (m.text or "").splitlines() if p.strip()]
+        if len(parts) < 2:
+            await m.answer("Нужно минимум две строки: название и IBAN.")
+            return
+        name, iban = parts[0], iban_clean(parts[1])
+        nif = parts[2] if len(parts) > 2 else ""
+        aliases = parts[3] if len(parts) > 3 else ""
+        if not iban_valid(iban):
+            await m.answer("IBAN не проходит проверку контрольного числа. "
+                           "Проверь и пришли снова.")
+            return
+        other, _r = find_proveedor_row(name)
+        if other:
+            await m.answer("Такой поставщик уже есть — открой его в справочнике и "
+                           "поправь реквизиты там.",
+                           reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                               [btn("Открыть", f"fin:prov:{other}")]]))
+            return
+        _await_prov_new.pop(uid, None)
+        try:
+            add_proveedor(name, iban, nif, m.from_user.full_name, aliases=aliases)
+        except Exception as ex:
+            log.exception("не смог добавить поставщика: %s", ex)
+            await m.answer("Не смог записать в таблицу, попробуй ещё раз.")
+            return
+        await m.answer(f"✅ Добавлен: <b>{e(name)}</b>\nBIC: {e(bic_by_iban(iban)) or '—'}",
+                       reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                           [btn("📇 Справочник", "fin:prov")]]))
+        return
+
+    # 4) импорт списком, присланный текстом
+    if _fresh(_await_prov_import.get(uid)):
+        await do_import(m, m.text or "")
+        return
+
+
+async def on_prov_file(m: Message):
+    """Импорт списка файлом .csv / .txt."""
+    uid = m.from_user.id
+    if not _fresh(_await_prov_import.get(uid)):
+        _await_prov_import.pop(uid, None)
+        return
+    doc = m.document
+    name = (doc.file_name or "").lower()
+    if not name.endswith((".csv", ".txt")):
+        await m.answer("Жду файл .csv или .txt — или просто пришли список текстом.")
+        return
+    if (doc.file_size or 0) > 2 * 1024 * 1024:
+        await m.answer("Файл слишком большой. Раздели на части или пришли текстом.")
+        return
+    try:
+        buf = await core.bot.download(doc)
+        raw = buf.read()
+    except Exception as ex:
+        log.warning("не смог скачать файл импорта: %s", ex)
+        await m.answer("Не смогла скачать файл, пришли список текстом.")
+        return
+    text = ""
+    for enc in ("utf-8-sig", "utf-8", "cp1251", "latin-1"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    await do_import(m, text)
+
+
+async def do_import(m: Message, text: str):
+    uid = m.from_user.id
+    records, errors = parse_import(text or "")
+    if not records and not errors:
+        await m.answer("Ничего не разобрала. Проверь формат: "
+                       "<code>Название | IBAN | NIF | алиасы</code>")
+        return
+    _await_prov_import.pop(uid, None)
+    added = updated = 0
+    if records:
+        try:
+            added, updated = await apply_import(records, m.from_user.full_name)
+        except Exception as ex:
+            log.exception("импорт справочника упал: %s", ex)
+            await m.answer("Таблица не приняла запись, попробуй ещё раз.")
+            return
+
+    lines = ["📥 <b>Импорт справочника</b>", "",
+             f"✅ Добавлено: <b>{added}</b>",
+             f"🔄 Обновлено: <b>{updated}</b>"]
+    if errors:
+        lines.append(f"⚠️ Пропущено: <b>{len(errors)}</b>")
+        lines.append("")
+        for err in errors[:10]:
+            lines.append(f"• {e(err)}")
+        if len(errors) > 10:
+            lines.append(f"…и ещё {len(errors) - 10}")
+        lines.append("")
+        lines.append("Пропущенные строки поправь и пришли ещё раз — дубликатов не будет.")
+    await m.answer("\n".join(lines)[:4000],
+                   reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                       [btn("📇 Справочник", "fin:prov")]]))
 
 
 # ---------------- СБОРКА РЕМЕСЫ (список + пересчёт; выгрузка — после ответов) ----------------
@@ -858,6 +1363,15 @@ CALLBACKS = [
     ("d:fin", cb_root, True),          # True = точное совпадение
     ("fin:up", cb_upload, True),
     ("fin:cancel", cb_cancel, True),
+    # справочник поставщиков — точные совпадения раньше префиксов
+    ("fin:provadd", cb_prov_add, True),
+    ("fin:provimp", cb_prov_import, True),
+    ("fin:provfind", cb_prov_find, True),
+    ("fin:provreset", cb_prov_reset, True),
+    ("fin:provf:", cb_prov_field, False),
+    ("fin:provp:", cb_prov_page, False),
+    ("fin:prov:", cb_prov_card, False),
+    ("fin:prov", cb_prov_list, True),
     ("fin:loc:", cb_pick_loc, False),
     ("fin:just:", cb_just, False),
     ("fin:l:", cb_loc_menu, False),
@@ -874,6 +1388,9 @@ CALLBACKS = [
 
 # Порядок важен: длинные префиксы раньше коротких.
 NAV_ROUTES = [
+    ("fin:provp:", cb_prov_page),
+    ("fin:prov:", cb_prov_card),
+    ("fin:prov", cb_prov_list),
     ("fin:doc:", cb_card),
     ("fin:unp:", cb_unpaid),
     ("fin:pay:", cb_paid),
@@ -949,4 +1466,20 @@ def setup(dp, core_module):
         lambda m: m.from_user and m.from_user.id in _await_fill
         and not (m.text or "").startswith("/"),
     )
-    log.info("fin_block подключён: %d колбэков, 2 обработчика сообщений", len(CALLBACKS))
+    # справочник поставщиков: файл со списком и любые текстовые ответы
+    dp.message.register(
+        on_prov_file,
+        F.chat.type == "private",
+        F.document,
+        lambda m: m.from_user and m.from_user.id in _await_prov_import,
+    )
+    dp.message.register(
+        on_prov_text,
+        F.chat.type == "private",
+        F.text,
+        lambda m: m.from_user and (
+            m.from_user.id in _await_prov_field or m.from_user.id in _await_prov_new
+            or m.from_user.id in _await_prov_import or m.from_user.id in _await_prov_find
+        ) and not (m.text or "").startswith("/"),
+    )
+    log.info("fin_block подключён: %d колбэков, 4 обработчика сообщений", len(CALLBACKS))
