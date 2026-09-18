@@ -10,7 +10,9 @@
 #   • автоматически — как только сотрудник в чек-листе переходит на этап
 #     «Подписано» (следующий шаг — «Заведено в Control Laboral»);
 #   • по команде /controllaboral — один файл на всех, кто сейчас
-#     на этапе «Подписано»;
+#     на этапе «Подписано» (Horario там пустой — вписать в файле);
+#   • для одного сотрудника бот сначала спрашивает Horario кнопками
+#     (шаблоны из HORARIOS с тем же числом часов, что в анкете);
 #   • по кнопке «📤 Файл для Control Laboral» в карточке чек-листа
 #     (callback «hrcl:<строка>», кнопку добавить в bot.py одной строкой).
 #
@@ -42,7 +44,7 @@ from xml.sax.saxutils import escape as xml_escape
 
 log = logging.getLogger("sumskaya.cl_export")
 
-VERSION = "cl_export 1.0 · 18.09.2026"
+VERSION = "cl_export 1.3 · 18.09.2026"
 
 M = None
 
@@ -75,8 +77,9 @@ DEFAULTS = {
         "boiboi": "2026 - Convenio Colectivo de Hostelería de la provincia de Valencia",
         "panaderia": "2026 - Convenio Colectivo de Panadería y Pastelería de la Comunidad Valenciana",
     },
-    "horario": "",             # название шаблона horario — УТОЧНИТЬ
-    "politica": "",            # название política de vacaciones — УТОЧНИТЬ
+    # Из карточки действующего сотрудника (18.09.2026):
+    "horario": "",             # выбирается кнопкой для каждого сотрудника (см. HORARIOS)
+    "politica": "POLITICA EMPLEADOS NUEVOS",
     "ccc": "",
     "centro": {                # локаль бота → «Centro» в Control Laboral
         "reina": "P+S Reina",
@@ -92,11 +95,82 @@ DEFAULTS = {
         "Marcar Inicio (0/1) *": 0,
         "Sin Notificar (0/1) *": 0,
         "Geolocalizable (0/1) *": 0,
-        "Fichaje (0/1) *": 1,
-        "Acceso App (0/1) *": 1,
+        "Fichaje (0/1) *": 0,          # метод «Validación de la jornada», не фичахе
+        "Acceso App (0/1) *": 1,       # App móvil — да
     },
     "periodo_firma": 3,        # 1 диарио, 2 семанал, 3 менсуаль
 }
+
+
+# Шаблоны «Horario laboral» из Control Laboral — названия буква в букву.
+# Бот показывает кнопками те, что совпадают по часам из анкеты.
+HORARIOS = [
+    "16 horas 2 dias lunes-martes",
+    "20 horas 11-15 mar-sab",
+    "20 horas 14-18 mie-dom",
+    "20 horas 16-20mie-dom",
+    "20 horas 4.00-08.00 lu-vie",
+    "20 horas 7-11 lu-vie",
+    "20 horas 9-13 mar-sab",
+    "25 horas 12 - 17",
+    "25 horas 18-23 lu-vie",
+    "30 horas 10-16 lu-vie",
+    "30 horas 12 - 18",
+    "30 horas 9-15 lu-vie",
+    "30 horas 9-15 Mie-Dom",
+    "30 horas lu-vie 14-20",
+    "35 horas 16-22",
+    "35 horas 7-14 lu-vie",
+    "40 horas 10-18 lu-vie",
+    "40 horas 10-18 Mie-Dom",
+    "40 horas 7-15 mar-sab",
+    "40 horas lu-vie 09:00-17:00",
+]
+
+
+# Обычные графики 40 ч у ресторанов — показываем первыми.
+RESTAURANT_40_FIRST = ["40 horas lu-vie 09:00-17:00", "40 horas 10-18 lu-vie"]
+
+
+def _start_hour(name: str):
+    """Час начала смены из названия: «20 horas 4.00-08.00» → 4, «30 horas lu-vie 14-20» → 14."""
+    m = re.search(r"(\d{1,2})(?:[.:]\d{2})?\s*-\s*\d", name)
+    return int(m.group(1)) if m else None
+
+
+def horarios_for(hours, loc_code: str = "") -> list:
+    """[(индекс, название, рекомендован)] шаблонов с тем же числом часов
+    (если таких нет — все), в удобном порядке:
+      • пекарня — сначала ранние смены;
+      • рестораны — сначала смены с 9 утра и позже, для 40 ч первыми
+        «9–17» и «10–18»."""
+    try:
+        h = int(float(str(hours).replace(",", ".")))
+    except Exception:
+        h = None
+    all_ = list(enumerate(HORARIOS))
+    same = [(i, n) for i, n in all_ if h is not None and n.strip().startswith(f"{h} horas")]
+    opts = same or all_
+
+    def key(item):
+        i, n = item
+        st = _start_hour(n)
+        st_sort = st if st is not None else 99
+        if loc_code == "panaderia":
+            return (0 if st is not None and st < 9 else 1, st_sort, n)
+        pref = RESTAURANT_40_FIRST.index(n) if n in RESTAURANT_40_FIRST else 99
+        return (pref, 0 if st is None or st >= 9 else 1, st_sort, n)
+
+    opts = sorted(opts, key=key)
+    out = []
+    for i, n in opts:
+        st = _start_hour(n)
+        if loc_code == "panaderia":
+            rec = st is not None and st < 9
+        else:
+            rec = n in RESTAURANT_40_FIRST or (h != 40 and st is not None and st >= 9)
+        out.append((i, n, rec))
+    return out
 
 
 def config() -> dict:
@@ -276,10 +350,12 @@ def _applicant_for(hr_row: dict) -> dict:
         return {}
 
 
-def collect(hr_indexes=None):
+def collect(hr_indexes=None, horario=None):
     """[(fio, row, problems)] по заданным строкам чек-листа, либо по всем
-    на этапе «Подписано»."""
+    на этапе «Подписано». horario — выбранный кнопкой шаблон."""
     cfg = config()
+    if horario:
+        cfg["horario"] = horario
     data = M.rows(M.HR_WS, force=True)
     out = []
     for idx, r in enumerate(data, start=2):
@@ -293,10 +369,38 @@ def collect(hr_indexes=None):
     return out
 
 
-async def send_file(chat_ids, hr_indexes=None, silent_if_empty=False):
+async def ask_horario(chat_ids, hr_idx: int):
+    """Кнопки выбора Horario для одного сотрудника, потом — файл."""
+    import asyncio
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    data = await asyncio.to_thread(M.rows, M.HR_WS, True)
+    try:
+        r = data[hr_idx - 2]
+    except IndexError:
+        return
+    app = await asyncio.to_thread(_applicant_for, r)
+    hours = clean_hours(app.get("Número de horas bajo contrato", ""))
+    loc_code = M.match_locale_code(str(app.get("Local", "") or r.get("Локаль", "")))
+    opts = horarios_for(hours, loc_code)
+    kb = [[InlineKeyboardButton(text=(f"⭐ {n}" if rec else n)[:60],
+                                callback_data=f"hrclh:{hr_idx}:{i}")]
+          for i, n, rec in opts]
+    kb.append([InlineKeyboardButton(text="✏️ Другой — впишу в файле сам",
+                                    callback_data=f"hrclh:{hr_idx}:x")])
+    fio = M.html_lib.escape(str(r.get("ФИО", "")).strip())
+    text = (f"📤 <b>{fio}</b> — готовлю файл для Control Laboral.\n"
+            f"Часов по анкете: <b>{hours or '—'}</b>\n\nВыберите Horario laboral:")
+    for cid in chat_ids:
+        try:
+            await M.bot.send_message(cid, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+        except Exception as e:
+            log.error("cl_export: не удалось спросить horario %s: %s", cid, e)
+
+
+async def send_file(chat_ids, hr_indexes=None, silent_if_empty=False, horario=None):
     import asyncio
     from aiogram.types import BufferedInputFile
-    items = await asyncio.to_thread(collect, hr_indexes)
+    items = await asyncio.to_thread(collect, hr_indexes, horario)
     if not items:
         if not silent_if_empty:
             for cid in chat_ids:
@@ -343,7 +447,7 @@ def _wrap_set_hr_stage():
         if stage == STAGE_SIGNED:
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(send_file(M.patrons(), hr_indexes={hr_row_idx}))
+                loop.create_task(ask_horario(M.patrons(), hr_row_idx))
             except RuntimeError:
                 pass
             except Exception as e:
@@ -373,7 +477,21 @@ def setup(dp, main_module):
         if not M.is_patron(M.get_user(c.from_user.id)):
             await c.answer("Только Патрон", show_alert=True)
             return
+        await c.answer()
+        await ask_horario([c.from_user.id], int(c.data.split(":")[1]))
+
+    @dp.callback_query(F.data.startswith("hrclh:"))
+    async def cb_cl_horario(c):
+        if not M.is_patron(M.get_user(c.from_user.id)):
+            await c.answer("Только Патрон", show_alert=True)
+            return
+        _, idx, hi = c.data.split(":")
+        horario = HORARIOS[int(hi)] if hi.isdigit() and int(hi) < len(HORARIOS) else None
         await c.answer("Собираю файл…")
-        await send_file([c.from_user.id], hr_indexes={int(c.data.split(":")[1])})
+        try:
+            await c.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await send_file([c.from_user.id], hr_indexes={int(idx)}, horario=horario)
 
     log.info("%s подключён", VERSION)
