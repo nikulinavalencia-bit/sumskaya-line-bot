@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Архив сотрудников</title>
+<style>
+:root{
+  --bg:#f6f5f2;--card:#fff;--ink:#1d1d1b;--muted:#6f6d68;--line:#e4e2dc;
+  --acc:#2f6b4f;--acc-soft:#e3efe8;--red:#b0413e;--red-soft:#f6e3e2;
+  --chip:#efeee9;--shadow:0 1px 2px rgba(0,0,0,.05);
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#141412;--card:#1d1d1b;--ink:#ecebe6;--muted:#9c9a93;--line:#2e2d2a;
+  --acc:#7cc39d;--acc-soft:#1f3329;--red:#e08a86;--red-soft:#3a2221;--chip:#262522;--shadow:none}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:1280px;margin:0 auto;padding:20px 16px 60px}
+header{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;justify-content:space-between;margin-bottom:16px}
+h1{font-size:22px;margin:0;font-weight:650;letter-spacing:-.01em}
+.sub{color:var(--muted);font-size:13px}
+button,select,input{font:inherit;color:inherit}
+.btn{border:1px solid var(--line);background:var(--card);padding:7px 12px;border-radius:8px;cursor:pointer}
+.btn:hover{border-color:var(--acc)}
+.btn.primary{background:var(--acc);color:#fff;border-color:var(--acc)}
+@media (prefers-color-scheme:dark){.btn.primary{color:#10261b}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:14px}
+.filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:14px}
+.filters label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)}
+.filters input,.filters select{border:1px solid var(--line);background:var(--card);border-radius:8px;padding:7px 9px;min-width:0}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{border:1px solid var(--line);background:var(--chip);border-radius:999px;padding:4px 11px;cursor:pointer;font-size:13px;user-select:none}
+.chip.on{background:var(--acc);border-color:var(--acc);color:#fff}
+@media (prefers-color-scheme:dark){.chip.on{color:#10261b}}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:12px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px}
+.kpi .v{font-size:26px;font-weight:650;font-variant-numeric:tabular-nums}
+.kpi .l{color:var(--muted);font-size:12px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+.grid2>*,.card{min-width:0}
+.filters{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.kpis{grid-template-columns:repeat(auto-fit,minmax(130px,1fr))}
+@media (max-width:860px){.grid2{grid-template-columns:1fr}}
+h2{font-size:15px;margin:0 0 10px;font-weight:620}
+.tbl-wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{font-size:12px;color:var(--muted);font-weight:560;cursor:pointer}
+td.n,th.n{text-align:right}
+tr.tot td{font-weight:650}
+tbody tr.click:hover{background:var(--chip);cursor:pointer}
+.bar{display:grid;grid-template-columns:90px 1fr 40px;gap:8px;align-items:center;margin:6px 0}
+.bar .t{height:18px;border-radius:4px;background:var(--acc)}
+.bar .t.b{background:var(--red)}
+.tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px}
+.tag.a{background:var(--acc-soft);color:var(--acc)}
+.tag.b{background:var(--red-soft);color:var(--red)}
+.muted{color:var(--muted)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{border:0;background:var(--card);padding:6px 11px;cursor:pointer}
+.seg button.on{background:var(--acc);color:#fff}
+@media (prefers-color-scheme:dark){.seg button.on{color:#10261b}}
+dialog{border:0;border-radius:14px;padding:0;max-width:560px;width:calc(100% - 32px);background:var(--card);color:var(--ink)}
+dialog::backdrop{background:rgba(0,0,0,.35)}
+.dlg{padding:18px}
+.dlg dl{display:grid;grid-template-columns:150px 1fr;gap:6px 12px;margin:12px 0 0}
+.dlg dt{color:var(--muted)}
+.dlg dd{margin:0;word-break:break-word}
+.err{color:var(--red);padding:30px 0}
+a{color:var(--acc)}
+.pager{display:flex;gap:6px;align-items:center;justify-content:flex-end;margin-top:10px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Архив сотрудников</h1>
+      <div class="sub" id="meta">Загрузка Registro…</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn" id="reset">Сбросить фильтры</button>
+      <button class="btn" id="refresh">↻ Обновить</button>
+    </div>
+  </header>
+
+  <div class="card" style="margin-bottom:14px">
+    <div class="row" style="margin-bottom:10px">
+      <div class="chips" id="locChips"></div>
+      <div class="seg" id="estadoSeg">
+        <button data-v="activo" class="on">Работают</button>
+        <button data-v="baja">Уволены</button>
+        <button data-v="all">Все</button>
+      </div>
+    </div>
+    <div class="filters">
+      <label>Поиск<input id="q" placeholder="имя, NIE, телефон, email"></label>
+      <label>Departamento<select id="dep"></select></label>
+      <label>Puesto<select id="puesto"></select></label>
+      <label>Пол<select id="sex"><option value="">Все</option><option>M</option><option>F</option></select></label>
+      <label>Числились на дату<input type="date" id="asof"></label>
+      <label>Приняты с<input type="date" id="altaFrom"></label>
+      <label>Приняты по<input type="date" id="altaTo"></label>
+    </div>
+    <div class="sub" id="asofNote" hidden>Режим «на дату»: показаны все, кто был принят не позже этой даты и не уволен до неё. Кнопки «Работают/Уволены» в этом режиме не действуют.</div>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="row"><h2 style="margin:0">Локаль × Departamento</h2>
+        <button class="btn" id="csvPivot">CSV</button></div>
+      <div class="tbl-wrap"><table id="pivot"></table></div>
+    </div>
+    <div class="card">
+      <div class="row"><h2 style="margin:0">Приём и увольнения по месяцам</h2>
+        <span class="sub">последние 12 мес., с учётом фильтров</span></div>
+      <div class="tbl-wrap"><table id="moves"></table></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <h2 style="margin:0" id="listTitle">Сотрудники</h2>
+      <button class="btn primary" id="csvList">Выгрузить список CSV</button>
+    </div>
+    <div class="tbl-wrap"><table id="list"></table></div>
+    <div class="pager" id="pager"></div>
+  </div>
+</div>
+
+<dialog id="dlg"><div class="dlg" id="dlgBody"></div></dialog>
+
+<script>
+const LOCS = ["REINA","FRANCIA","BAKERY","BOI BOI"];
+const LOC_NAME = {"REINA":"Reina","FRANCIA":"Francia","BAKERY":"Bakery","BOI BOI":"Boi Boi"};
+const PAGE = 50;
+let ALL = [], META = {};
+const S = {locs:new Set(), estado:"activo", q:"", dep:"", puesto:"", sex:"", asof:"", altaFrom:"", altaTo:"", sort:"name", dir:1, page:0};
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt = iso => iso ? iso.split("-").reverse().join(".") : "";
+const norm = s => String(s||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"");
+
+async function load(force){
+  $("meta").textContent = "Загрузка Registro…";
+  try{
+    const r = await fetch("/hr/api/data" + (force ? "?force=1" : ""), {credentials:"same-origin"});
+    if(r.status === 401){ document.body.innerHTML = '<div class="wrap"><h2>Ссылка устарела</h2><p>Отправьте боту <b>/archivo</b>, чтобы получить новую.</p></div>'; return; }
+    const d = await r.json();
+    if(d.error) throw new Error(d.error);
+    ALL = d.records; META = d;
+    let note = `Registro · ${ALL.length} записей · обновлено ${d.updated}`;
+    if(d.columns_missing && d.columns_missing.length) note += ` · не найдены колонки: ${d.columns_missing.join(", ")}`;
+    $("meta").textContent = note;
+    buildOptions(); render();
+  }catch(e){
+    $("meta").innerHTML = `<span class="err">Не удалось прочитать Registro: ${esc(e.message)}</span>`;
+  }
+}
+
+function buildOptions(){
+  const extraLocs = [...new Set(ALL.map(r=>r.local).filter(l=>l && !LOCS.includes(l)))];
+  $("locChips").innerHTML = [...LOCS, ...extraLocs].map(l =>
+    `<span class="chip ${S.locs.has(l)?"on":""}" data-l="${esc(l)}">${esc(LOC_NAME[l]||l||"—")}</span>`).join("");
+  const opt = (id, key) => {
+    const vals = [...new Set(ALL.map(r=>r[key]).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"es"));
+    $(id).innerHTML = `<option value="">Все</option>` + vals.map(v=>`<option ${S[key]===v?"selected":""}>${esc(v)}</option>`).join("");
+  };
+  opt("dep","dep"); opt("puesto","puesto");
+}
+
+function employedOn(r, d){
+  return r.alta && r.alta <= d && (!r.baja || r.baja > d);
+}
+
+function filtered(){
+  const q = norm(S.q);
+  return ALL.filter(r=>{
+    if(S.locs.size && !S.locs.has(r.local)) return false;
+    if(S.asof){ if(!employedOn(r, S.asof)) return false; }
+    else if(S.estado !== "all" && r.estado !== S.estado) return false;
+    if(S.dep && r.dep !== S.dep) return false;
+    if(S.puesto && r.puesto !== S.puesto) return false;
+    if(S.sex && r.sex !== S.sex) return false;
+    if(S.altaFrom && (!r.alta || r.alta < S.altaFrom)) return false;
+    if(S.altaTo && (!r.alta || r.alta > S.altaTo)) return false;
+    if(q && !norm([r.name,r.nie,r.tel,r.email,r.puesto].join(" ")).includes(q)) return false;
+    return true;
+  });
+}
+
+// для KPI и движения по месяцам: те же фильтры, но без статуса/даты
+function filteredNoStatus(){
+  const q = norm(S.q);
+  return ALL.filter(r=>{
+    if(S.locs.size && !S.locs.has(r.local)) return false;
+    if(S.dep && r.dep !== S.dep) return false;
+    if(S.puesto && r.puesto !== S.puesto) return false;
+    if(S.sex && r.sex !== S.sex) return false;
+    if(q && !norm([r.name,r.nie,r.tel,r.email,r.puesto].join(" ")).includes(q)) return false;
+    return true;
+  });
+}
+
+function render(){
+  const rows = filtered(), base = filteredNoStatus();
+  const today = new Date().toISOString().slice(0,10), ym = today.slice(0,7);
+  const act = base.filter(r=>r.estado==="activo").length;
+  const kp = [
+    [rows.length, S.asof ? `числились на ${fmt(S.asof)}` : "в выборке"],
+    [act, "работают сейчас"],
+    [base.filter(r=>r.estado==="baja").length, "уволены (всего)"],
+    [base.filter(r=>r.alta.startsWith(ym)).length, "приняты в этом месяце"],
+    [base.filter(r=>r.baja.startsWith(ym)).length, "уволены в этом месяце"],
+  ];
+  $("kpis").innerHTML = kp.map(([v,l])=>`<div class="card kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
+  renderPivot(rows); renderMoves(base); renderList(rows);
+  $("asofNote").hidden = !S.asof;
+  document.querySelectorAll("#estadoSeg button").forEach(b=>{
+    b.classList.toggle("on", b.dataset.v===S.estado); b.disabled = !!S.asof; b.style.opacity = S.asof ? .5 : 1;});
+}
+
+let PIVOT = [];
+function renderPivot(rows){
+  const locs = [...new Set([...LOCS.filter(l=>rows.some(r=>r.local===l)), ...rows.map(r=>r.local)])];
+  const deps = [...new Set(rows.map(r=>r.dep||"—"))].sort((a,b)=>a.localeCompare(b,"es"));
+  const cnt = (l,d) => rows.filter(r=>r.local===l && (r.dep||"—")===d).length;
+  PIVOT = [["Departamento", ...locs.map(l=>LOC_NAME[l]||l||"—"), "Итого"]];
+  let h = `<thead><tr><th>Departamento</th>${locs.map(l=>`<th class="n">${esc(LOC_NAME[l]||l||"—")}</th>`).join("")}<th class="n">Итого</th></tr></thead><tbody>`;
+  deps.forEach(d=>{
+    const c = locs.map(l=>cnt(l,d)), s = c.reduce((a,b)=>a+b,0);
+    PIVOT.push([d, ...c, s]);
+    h += `<tr><td>${esc(d)}</td>${c.map(v=>`<td class="n">${v||'<span class="muted">·</span>'}</td>`).join("")}<td class="n"><b>${s}</b></td></tr>`;
+  });
+  const tot = locs.map(l=>rows.filter(r=>r.local===l).length);
+  PIVOT.push(["Итого", ...tot, rows.length]);
+  h += `<tr class="tot"><td>Итого</td>${tot.map(v=>`<td class="n">${v}</td>`).join("")}<td class="n">${rows.length}</td></tr></tbody>`;
+  $("pivot").innerHTML = rows.length ? h : `<tr><td class="muted">Нет данных под фильтр</td></tr>`;
+}
+
+function renderMoves(base){
+  const months = [];
+  const d = new Date(); d.setDate(1);
+  for(let i=0;i<12;i++){ months.unshift(d.toISOString().slice(0,7)); d.setMonth(d.getMonth()-1); }
+  const MN = ["янв","фев","мар","апр","май","июн","июл","авг","сен","окт","ноя","дек"];
+  const data = months.map(m=>({m, a:base.filter(r=>r.alta.startsWith(m)).length, b:base.filter(r=>r.baja.startsWith(m)).length}));
+  const max = Math.max(1, ...data.map(x=>Math.max(x.a,x.b)));
+  let h = `<thead><tr><th>Месяц</th><th>Принято</th><th></th><th>Уволено</th><th></th></tr></thead><tbody>`;
+  data.forEach(x=>{
+    const [y,mm] = x.m.split("-");
+    h += `<tr><td>${MN[+mm-1]} ${y}</td>
+      <td class="n">${x.a}</td><td style="width:40%"><div class="bar" style="grid-template-columns:1fr;margin:0"><div class="t" style="width:${x.a/max*100}%;min-width:${x.a?2:0}px"></div></div></td>
+      <td class="n">${x.b}</td><td style="width:40%"><div class="bar" style="grid-template-columns:1fr;margin:0"><div class="t b" style="width:${x.b/max*100}%;min-width:${x.b?2:0}px"></div></div></td></tr>`;
+  });
+  $("moves").innerHTML = h + "</tbody>";
+}
+
+const COLS = [["name","Имя"],["local","Локаль"],["dep","Departamento"],["puesto","Puesto"],["horas","Часы"],["alta","Alta"],["baja","Baja"],["estado","Статус"]];
+function renderList(rows){
+  rows = rows.slice().sort((a,b)=>String(a[S.sort]||"").localeCompare(String(b[S.sort]||""),"es")*S.dir);
+  const pages = Math.max(1, Math.ceil(rows.length/PAGE));
+  if(S.page >= pages) S.page = 0;
+  const part = rows.slice(S.page*PAGE, S.page*PAGE+PAGE);
+  $("listTitle").textContent = `Сотрудники · ${rows.length}`;
+  let h = `<thead><tr>${COLS.map(([k,l])=>`<th data-k="${k}">${l}${S.sort===k?(S.dir>0?" ▲":" ▼"):""}</th>`).join("")}</tr></thead><tbody>`;
+  part.forEach(r=>{
+    h += `<tr class="click" data-row="${r.row}"><td>${esc(r.name)}</td><td>${esc(LOC_NAME[r.local]||r.local)}</td><td>${esc(r.dep)}</td><td>${esc(r.puesto)}</td><td>${esc(r.horas)}</td><td>${fmt(r.alta)}</td><td>${fmt(r.baja)}</td><td>${r.estado==="activo"?'<span class="tag a">работает</span>':'<span class="tag b">уволен(а)</span>'}</td></tr>`;
+  });
+  $("list").innerHTML = rows.length ? h+"</tbody>" : `<tr><td class="muted">Никого под этот фильтр</td></tr>`;
+  $("pager").innerHTML = pages>1 ? `<button class="btn" data-p="-1" ${S.page===0?"disabled":""}>←</button><span class="sub">${S.page+1} / ${pages}</span><button class="btn" data-p="1" ${S.page>=pages-1?"disabled":""}>→</button>` : "";
+}
+
+function card(r){
+  const f = [["Локаль",LOC_NAME[r.local]||r.local],["Departamento",r.dep],["Puesto",r.puesto],["Tipo de contrato",r.tipo],
+    ["Fecha de alta",fmt(r.alta)],["Fecha de baja",fmt(r.baja)],["Período",r.periodo],["Motivo",r.motivo],
+    ["Часы",r.horas],["Horario",r.horario],["Пол",r.sex],["Дата рождения",fmt(r.nac)],["NIE/TIE",r.nie],
+    ["Телефон",r.tel],["Email",r.email],["IBAN",r.iban],["Domicilio",r.domicilio]];
+  Object.entries(r.extra||{}).forEach(([k,v])=>f.push([k,v]));
+  $("dlgBody").innerHTML = `<div class="row" style="margin:0"><h2 style="margin:0;font-size:18px">${esc(r.name)}</h2>
+    <button class="btn" onclick="dlg.close()">✕</button></div>
+    ${r.estado==="activo"?'<span class="tag a">работает</span>':'<span class="tag b">уволен(а)</span>'}
+    <span class="sub">· строка ${r.row} в Registro</span>
+    <dl>${f.filter(x=>x[1]).map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}
+    ${r.contrato?`<dt>Контракт</dt><dd><a href="${esc(r.contrato)}" target="_blank" rel="noopener">папка на Диске ↗</a></dd>`:""}</dl>`;
+  $("dlg").showModal();
+}
+
+function csv(rows, name){
+  const s = rows.map(r=>r.map(v=>{v=String(v??"");return /[;"\n]/.test(v)?`"${v.replace(/"/g,'""')}"`:v;}).join(";")).join("\r\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob(["﻿"+s],{type:"text/csv;charset=utf-8"}));
+  a.download = name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+
+// ---- события ----
+$("locChips").onclick = e=>{const c=e.target.closest(".chip"); if(!c) return;
+  const l=c.dataset.l; S.locs.has(l)?S.locs.delete(l):S.locs.add(l); c.classList.toggle("on"); S.page=0; render();};
+$("estadoSeg").onclick = e=>{const b=e.target.closest("button"); if(!b||S.asof) return; S.estado=b.dataset.v; S.page=0; render();};
+[["q","input"],["dep","change"],["puesto","change"],["sex","change"],["asof","change"],["altaFrom","change"],["altaTo","change"]]
+  .forEach(([id,ev])=>$(id).addEventListener(ev,()=>{S[id]=$(id).value; S.page=0; render();}));
+$("list").onclick = e=>{
+  const th=e.target.closest("th"); if(th){const k=th.dataset.k; S.dir = S.sort===k ? -S.dir : 1; S.sort=k; render(); return;}
+  const tr=e.target.closest("tr.click"); if(tr){const r=ALL.find(x=>x.row==tr.dataset.row); if(r) card(r);}
+};
+$("pager").onclick = e=>{const b=e.target.closest("button"); if(!b) return; S.page+=+b.dataset.p; render();};
+$("dlg").addEventListener("click", e=>{ if(e.target.id==="dlg") $("dlg").close(); });
+$("refresh").onclick = ()=>load(true);
+$("reset").onclick = ()=>{Object.assign(S,{estado:"activo",q:"",dep:"",puesto:"",sex:"",asof:"",altaFrom:"",altaTo:"",page:0}); S.locs.clear();
+  ["q","dep","puesto","sex","asof","altaFrom","altaTo"].forEach(id=>$(id).value=""); buildOptions(); render();};
+$("csvPivot").onclick = ()=>csv(PIVOT, `plantilla_${S.asof||new Date().toISOString().slice(0,10)}.csv`);
+$("csvList").onclick = ()=>csv([["Nombre","Local","Departamento","Puesto","Horas","Alta","Baja","Estado","Tipo","NIE","Teléfono","Email"],
+  ...filtered().map(r=>[r.name,LOC_NAME[r.local]||r.local,r.dep,r.puesto,r.horas,fmt(r.alta),fmt(r.baja),r.estado,r.tipo,r.nie,r.tel,r.email])],
+  `empleados_${new Date().toISOString().slice(0,10)}.csv`);
+load(false);
+</script>
+</body>
+</html>
