@@ -104,6 +104,13 @@ def build_checks():
         ("💶 Справочник поставщиков с правкой в боте",
          lambda: hasattr(sys.modules.get("fin_block"), "cb_prov_list")),
         ("🔍 Распознавание фактур включено (есть ключ Gemini)", _ocr_on),
+        ("🌐 Веб-архив сотрудников подключён (/archivo)",
+         lambda: bool(getattr(sys.modules.get("hr_web"), "M", None))),
+        ("🌐 Веб-архив: сервер запущен и задан HR_WEB_URL",
+         lambda: bool(getattr(sys.modules.get("hr_web"), "_runner", None))
+         and bool(os.environ.get("HR_WEB_URL"))),
+        ("📤 Файл для Control Laboral подключён (/controllaboral)",
+         lambda: bool(getattr(sys.modules.get("cl_export"), "M", None))),
     ]
 
 
@@ -182,6 +189,8 @@ async def _on_startup():
         await core.bot.set_my_commands([
             BotCommand(command="start", description="🔄 Обновить / открыть меню"),
             BotCommand(command="version", description="🧾 Что залито на сервер"),
+            BotCommand(command="archivo", description="🌐 Архив сотрудников"),
+            BotCommand(command="controllaboral", description="📤 Файл для Control Laboral"),
         ])
     except Exception as ex:
         log.warning("не смог обновить список команд: %s", ex)
