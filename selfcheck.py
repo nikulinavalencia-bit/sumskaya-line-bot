@@ -111,6 +111,8 @@ def build_checks():
          and bool(os.environ.get("HR_WEB_URL"))),
         ("📤 Файл для Control Laboral подключён (/controllaboral)",
          lambda: bool(getattr(sys.modules.get("cl_export"), "M", None))),
+        ("🏖 Расчёт отпуска подключён (/vacaciones)",
+         lambda: bool(getattr(sys.modules.get("vacaciones"), "M", None))),
     ]
 
 
@@ -191,6 +193,7 @@ async def _on_startup():
             BotCommand(command="version", description="🧾 Что залито на сервер"),
             BotCommand(command="archivo", description="🌐 Архив сотрудников"),
             BotCommand(command="controllaboral", description="📤 Файл для Control Laboral"),
+            BotCommand(command="vacaciones", description="🏖 Расчёт отпуска"),
         ])
     except Exception as ex:
         log.warning("не смог обновить список команд: %s", ex)
