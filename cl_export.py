@@ -387,6 +387,8 @@ async def ask_horario(chat_ids, hr_idx: int):
           for i, n, rec in opts]
     kb.append([InlineKeyboardButton(text="✏️ Другой — впишу в файле сам",
                                     callback_data=f"hrclh:{hr_idx}:x")])
+    if hasattr(M, "nav_row"):
+        kb.append(M.nav_row())
     fio = M.html_lib.escape(str(r.get("ФИО", "")).strip())
     text = (f"📤 <b>{fio}</b> — готовлю файл для Control Laboral.\n"
             f"Часов по анкете: <b>{hours or '—'}</b>\n\nВыберите Horario laboral:")
@@ -404,8 +406,12 @@ async def send_file(chat_ids, hr_indexes=None, silent_if_empty=False, horario=No
     if not items:
         if not silent_if_empty:
             for cid in chat_ids:
+                kb = None
+                if hasattr(M, "nav_row"):
+                    from aiogram.types import InlineKeyboardMarkup
+                    kb = InlineKeyboardMarkup(inline_keyboard=[M.nav_row()])
                 await M.bot.send_message(cid, "Нет сотрудников на этапе «Подписано» — "
-                                              "в Control Laboral заводить некого.")
+                                              "в Control Laboral заводить некого.", reply_markup=kb)
         return
     raw = make_xlsx([row for _, row, _ in items])
     stamp = M.now_local().strftime("%d-%m-%Y_%H%M")

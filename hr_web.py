@@ -38,7 +38,7 @@ from datetime import datetime, date
 
 log = logging.getLogger("sumskaya.hr_web")
 
-VERSION = "hr_web 1.0 · 18.09.2026"
+VERSION = "hr_web 1.1 · 18.09.2026"
 
 M = None          # модуль bot.py — берём оттуда таблицы, роли, bot
 _runner = None
@@ -193,10 +193,50 @@ def _iso(d) -> str:
     return d.isoformat() if d else ""
 
 
+def _date_parts_cols(headers: list, day_col):
+    """В Registro дата разбита на три колонки: «Fecha de Alta» (число),
+    «Mes», «Año». Ищем Mes/Año сразу справа от колонки с числом."""
+    if day_col is None:
+        return None, None
+    mes = ano = None
+    for j in range(day_col + 1, min(day_col + 4, len(headers))):
+        h = _norm(headers[j])
+        if mes is None and h.startswith("mes"):
+            mes = j
+        elif ano is None and (h.startswith("año") or h.startswith("ano")):
+            ano = j
+    return mes, ano
+
+
+def _date_from_parts(row: list, day_col, mes_col, ano_col):
+    """Дата из «число + Mes + Año»; если в колонке числа уже целая дата —
+    берём её как есть."""
+    def cell(i):
+        return str(row[i]).strip() if i is not None and i < len(row) else ""
+    day = cell(day_col)
+    if not day:
+        return None
+    full = parse_date(day)
+    if full and not re.fullmatch(r"\d{5}", day):
+        return full
+    try:
+        d = int(float(day.replace(",", ".")))
+        m = int(float(cell(mes_col).replace(",", ".")))
+        y = int(float(cell(ano_col).replace(",", ".")))
+        if y < 100:
+            y += 2000
+        return date(y, m, d)
+    except Exception:
+        return full
+
+
 def build_records(values: list, formulas: list, header_row: int) -> dict:
     """Из сырых значений листа — список сотрудников для страницы."""
     headers = values[header_row - 1] if len(values) >= header_row else []
     cols = map_columns(headers)
+    alta_mes, alta_ano = _date_parts_cols(headers, cols.get("alta"))
+    baja_mes, baja_ano = _date_parts_cols(headers, cols.get("baja"))
+    part_cols = {c for c in (alta_mes, alta_ano, baja_mes, baja_ano) if c is not None}
     records = []
     for r_i in range(header_row, len(values)):
         row = values[r_i]
@@ -208,7 +248,8 @@ def build_records(values: list, formulas: list, header_row: int) -> dict:
             i = cols.get(key)
             return str(row[i]).strip() if i is not None and i < len(row) else ""
 
-        alta, baja = parse_date(g("alta")), parse_date(g("baja"))
+        alta = _date_from_parts(row, cols.get("alta"), alta_mes, alta_ano)
+        baja = _date_from_parts(row, cols.get("baja"), baja_mes, baja_ano)
         tipo = g("tipo")
         fired = bool(baja) or any(w in _norm(tipo) for w in ("despedid", "baja"))
         link = ""
@@ -217,7 +258,7 @@ def build_records(values: list, formulas: list, header_row: int) -> dict:
             link = _hyperlink_url(formulas[r_i][ci])
 
         extra = {}
-        mapped = set(cols.values()) | {0}
+        mapped = set(cols.values()) | {0} | part_cols
         for i, h in enumerate(headers):
             if i in mapped or not str(h).strip() or i >= len(row):
                 continue
@@ -378,8 +419,10 @@ def setup(dp, main_module):
                 "<code>HR_WEB_URL</code> — публичный адрес сервиса.")
             return
         link = f"{base}/hr?t={make_token(uid)}"
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🌐 Открыть архив сотрудников", url=link)]])
+        rows = [[InlineKeyboardButton(text="🌐 Открыть архив сотрудников", url=link)]]
+        if hasattr(M, "nav_row"):
+            rows.append(M.nav_row())
+        kb = InlineKeyboardMarkup(inline_keyboard=rows)
         await M.bot.send_message(
             chat_id,
             "🌐 <b>Архив сотрудников</b>\n\nЛичная ссылка, действует 24 часа. "

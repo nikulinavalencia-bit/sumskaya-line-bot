@@ -2231,7 +2231,10 @@ async def on_private_text_registro(m: Message):
         "Horas": str(applicant.get("Número de horas bajo contrato", "")).strip(),
         "Departamento": departamento,
         "Puesto": normalize_puesto(str(hr_row.get("Должность", "")).strip()),
-        "Fecha de Alta": fecha_alta_raw,
+        # В Registro дата разбита на 3 колонки: число / Mes / Año
+        "Fecha de Alta": str(parse_ddmmyyyy(fecha_alta_raw).day),
+        "Mes": str(parse_ddmmyyyy(fecha_alta_raw).month),
+        "Año": str(parse_ddmmyyyy(fecha_alta_raw).year),
         "Tipo de contrato": tipo_contrato,
         "Horario": horario,
         "IBAN": str(applicant.get("IBAN", "")).strip(),
@@ -3304,6 +3307,30 @@ async def cb_sent(c: CallbackQuery):
     await nav_back(c)
 
 
+def _clear_module_waits(uid: int):
+    """Сбрасывает ожидание ввода в модулях (расчёт отпуска и т.п.)."""
+    for mod in ("vacaciones",):
+        try:
+            getattr(__import__(mod), "_awaiting", {}).pop(uid, None)
+        except Exception:
+            pass
+
+
+def nav_row(lang: str = DEFAULT_LANG):
+    """Ряд «Назад в HR / В начало» для сообщений модулей."""
+    return [InlineKeyboardButton(text=t("back", lang), callback_data="nav:hr"),
+            InlineKeyboardButton(text=t("home", lang), callback_data="nav:home")]
+
+
+@dp.callback_query(F.data.startswith("nav:"))
+async def cb_nav(c: CallbackQuery):
+    """Кнопки «Назад» / «В начало» из сообщений модулей (отпуск, Control
+    Laboral, веб-архив): сбрасываем ожидание ввода и открываем экран."""
+    _clear_module_waits(c.from_user.id)
+    target = c.data.split(":", 1)[1]
+    await route(c, "d:hr" if target == "hr" else "home")
+
+
 @dp.callback_query(F.data == "noop")
 async def cb_noop(c: CallbackQuery):
     await c.answer()
@@ -3419,6 +3446,7 @@ async def start(m: Message):
     _awaiting_hr_input.pop(uid, None)
     _awaiting_registro_input.pop(uid, None)
     _awaiting_photo.pop(uid, None)
+    _clear_module_waits(uid)
     u = get_user(uid)
 
     if not rows(USERS_WS, force=True):

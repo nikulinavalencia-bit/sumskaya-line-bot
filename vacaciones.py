@@ -24,7 +24,7 @@ from datetime import date, datetime, timedelta
 
 log = logging.getLogger("sumskaya.vacaciones")
 
-VERSION = "vacaciones 1.0 · 18.09.2026"
+VERSION = "vacaciones 1.1 · 18.09.2026"
 
 DAYS_PER_MONTH = 2.5
 
@@ -103,6 +103,17 @@ def _norm(s: str) -> str:
 
 # ---------------- ТЕЛЕГРАМ ----------------
 
+def _nav(rows=None):
+    """Клавиатура: свои кнопки + ряд «Назад в HR / В начало»."""
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    if hasattr(M, "nav_row"):
+        nav = M.nav_row()
+    else:
+        nav = [InlineKeyboardButton(text="⬅️ Назад", callback_data="d:hr"),
+               InlineKeyboardButton(text="🏠 В начало", callback_data="home")]
+    return InlineKeyboardMarkup(inline_keyboard=(rows or []) + [nav])
+
+
 def _is_patron(uid) -> bool:
     try:
         return M.is_patron(M.get_user(uid))
@@ -116,7 +127,8 @@ async def _start(chat_id: int, uid: int):
         chat_id,
         "🏖 <b>Расчёт отпуска</b>\n\nНапишите имя или фамилию сотрудника "
         "(можно часть) — найду в Registro.\n\n"
-        "<i>Правило: 2,5 дня за месяц с даты подписания договора, 30 дней в год.</i>")
+        "<i>Правило: 2,5 дня за месяц с даты подписания договора, 30 дней в год.</i>",
+        reply_markup=_nav())
 
 
 def setup(dp, main_module):
@@ -150,7 +162,8 @@ def setup(dp, main_module):
         recs = await _records()
         r = next((x for x in recs if x["row"] == row), None)
         if not r:
-            await M.bot.send_message(c.from_user.id, "Не нашла эту строку в Registro, попробуйте ещё раз.")
+            await M.bot.send_message(c.from_user.id, "Не нашла эту строку в Registro, попробуйте ещё раз.",
+                                     reply_markup=_nav())
             return
         _awaiting[c.from_user.id] = {"stage": "used", "row": row}
         esc = M.html_lib.escape
@@ -163,7 +176,8 @@ def setup(dp, main_module):
             f"Fecha de Alta: <b>{_fmt(date.fromisoformat(r['alta'])) if r.get('alta') else '— нет в Registro'}</b>\n"
             f"Fecha de Baja: <b>{baja_txt}</b>\n\n"
             "Сколько дней отпуска уже <b>использовано</b>? Напишите число (например <code>7</code>).\n"
-            "Другая дата ухода — через пробел: <code>7 30.09.2026</code>")
+            "Другая дата ухода — через пробел: <code>7 30.09.2026</code>",
+            reply_markup=_nav())
 
     @dp.message(F.chat.type == "private", F.text,
                 lambda m: m.from_user and m.from_user.id in _awaiting
@@ -178,14 +192,15 @@ def setup(dp, main_module):
             recs = await _records()
             found = [r for r in recs if q and q in _norm(r["name"])]
             if not found:
-                await m.answer("Никого не нашла. Напишите по-другому (часть имени или фамилии).")
+                await m.answer("Никого не нашла. Напишите по-другому (часть имени или фамилии).",
+                               reply_markup=_nav())
                 return
             found.sort(key=lambda r: (r.get("estado") != "baja", r["name"]))
             kb = [[InlineKeyboardButton(
                 text=f"{'🔴' if r.get('estado') == 'baja' else '🟢'} {r['name']} · {r.get('local', '')}"[:60],
                 callback_data=f"vacr:{r['row']}")] for r in found[:20]]
             await m.answer(f"Нашла {len(found)}. Выберите:" + (" (показаны первые 20)" if len(found) > 20 else ""),
-                           reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+                           reply_markup=_nav(kb))
             return
 
         if st.get("stage") == "used":
@@ -193,18 +208,20 @@ def setup(dp, main_module):
             try:
                 used = float(parts[0])
             except (ValueError, IndexError):
-                await m.answer("Нужно число — сколько дней отпуска использовано. Например <code>7</code>.")
+                await m.answer("Нужно число — сколько дней отпуска использовано. Например <code>7</code>.",
+                               reply_markup=_nav())
                 return
             override = _parse_date(parts[1]) if len(parts) > 1 else None
             if len(parts) > 1 and not override:
-                await m.answer("Дата не распознана, формат дд.мм.гггг. Например <code>7 30.09.2026</code>.")
+                await m.answer("Дата не распознана, формат дд.мм.гггг. Например <code>7 30.09.2026</code>.",
+                               reply_markup=_nav())
                 return
             recs = await _records()
             r = next((x for x in recs if x["row"] == st.get("row")), None)
             if not r or not r.get("alta"):
                 _awaiting.pop(uid, None)
                 await m.answer("У сотрудника нет Fecha de Alta в Registro — посчитать не могу. "
-                               "Заполните дату в таблице и попробуйте снова.")
+                               "Заполните дату в таблице и попробуйте снова.", reply_markup=_nav())
                 return
             alta = date.fromisoformat(r["alta"])
             if override:
@@ -214,7 +231,7 @@ def setup(dp, main_module):
             else:
                 last, src = M.now_local().date(), "сегодня (Baja не указана)"
             if last < alta:
-                await m.answer("Дата ухода раньше даты прихода — проверьте даты.")
+                await m.answer("Дата ухода раньше даты прихода — проверьте даты.", reply_markup=_nav())
                 return
             res = calc(alta, last, used)
             _awaiting.pop(uid, None)
@@ -229,7 +246,8 @@ def setup(dp, main_module):
                 f"(= {_num(res['months'])} мес.)\n\n"
                 f"Начислено: {_num(res['months'])} × 2,5 = <b>{_num(res['accrued'])}</b> дн.\n"
                 f"Использовано: <b>{_num(res['used'])}</b> дн.\n"
-                f"{sign} Остаток: <b>{_num(res['left'])}</b> дн. — {tail}")
+                f"{sign} Остаток: <b>{_num(res['left'])}</b> дн. — {tail}",
+                reply_markup=_nav([[InlineKeyboardButton(text="🔁 Посчитать ещё", callback_data="vac")]]))
             return
 
     log.info("%s подключён", VERSION)
