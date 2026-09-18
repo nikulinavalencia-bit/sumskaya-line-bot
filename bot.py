@@ -1,7 +1,7 @@
 # =========================================================
 #  SUMSKAYA LINE SL — корпоративный бот
 #  v0.4 — 3 языка + статус за сегодня + приём из групп
-#  18.09.2026 — подключены hr_web (/archivo) и cl_export (/controllaboral)
+#  18.09.2026 — подключены hr_web (/archivo), cl_export (/controllaboral), vacaciones (/vacaciones)
 # =========================================================
 
 import os
@@ -1604,6 +1604,14 @@ try:
 except Exception as _e:
     log.error("cl_export не подключён: %s", _e, exc_info=True)
 
+# Расчёт остатка отпуска (/vacaciones).
+try:
+    import sys as _sys
+    import vacaciones
+    vacaciones.setup(dp, _sys.modules[__name__])
+except Exception as _e:
+    log.error("vacaciones не подключён: %s", _e, exc_info=True)
+
 
 CAPTION_LIMIT = 1000
 
@@ -1903,6 +1911,7 @@ async def cb_dept(c: CallbackQuery):
             kb.append([InlineKeyboardButton(
                 text=f"🗄 Архив по почте ({len(rows(MAIL_WS))})", callback_data="hrarch")])
             kb.append([InlineKeyboardButton(text="🌐 Архив сотрудников (веб)", callback_data="hrweb")])
+            kb.append([InlineKeyboardButton(text="🏖 Расчёт отпуска", callback_data="vac")])
         kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
         await take_over(c, f"{crumb(dept, lang)}", InlineKeyboardMarkup(inline_keyboard=kb))
         await c.answer()
