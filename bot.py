@@ -1,6 +1,7 @@
 # =========================================================
 #  SUMSKAYA LINE SL — корпоративный бот
 #  v0.4 — 3 языка + статус за сегодня + приём из групп
+#  18.09.2026 — подключены hr_web (/archivo) и cl_export (/controllaboral)
 # =========================================================
 
 import os
@@ -1587,6 +1588,22 @@ try:
 except Exception as _e:
     log.error("solicitud_watch не подключён: %s", _e, exc_info=True)
 
+# Веб-архив сотрудников (/archivo).
+try:
+    import sys as _sys
+    import hr_web
+    hr_web.setup(dp, _sys.modules[__name__])
+except Exception as _e:
+    log.error("hr_web не подключён: %s", _e, exc_info=True)
+
+# Файл для импорта в Control Laboral (/controllaboral).
+try:
+    import sys as _sys
+    import cl_export
+    cl_export.setup(dp, _sys.modules[__name__])
+except Exception as _e:
+    log.error("cl_export не подключён: %s", _e, exc_info=True)
+
 
 CAPTION_LIMIT = 1000
 
@@ -1885,6 +1902,7 @@ async def cb_dept(c: CallbackQuery):
                 text=f"📨 Заявки сотрудников ({n_req})", callback_data="hrq")])
             kb.append([InlineKeyboardButton(
                 text=f"🗄 Архив по почте ({len(rows(MAIL_WS))})", callback_data="hrarch")])
+            kb.append([InlineKeyboardButton(text="🌐 Архив сотрудников (веб)", callback_data="hrweb")])
         kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
         await take_over(c, f"{crumb(dept, lang)}", InlineKeyboardMarkup(inline_keyboard=kb))
         await c.answer()
@@ -3045,6 +3063,7 @@ async def cb_hr_checklist_detail(c: CallbackQuery):
         nxt = HR_STAGES[stage_idx + 1]
         kb.append([InlineKeyboardButton(text=f"➡️ {nxt}", callback_data=f"hrnext:{idx}")])
     kb.append([InlineKeyboardButton(text="📅 Указать срок и разрешение", callback_data=f"hrdate:{idx}")])
+    kb.append([InlineKeyboardButton(text="📤 Файл для Control Laboral", callback_data=f"hrcl:{idx}")])
     kb.append([InlineKeyboardButton(text="🗑 Удалить из чек-листа", callback_data=f"hrdel:{idx}")])
     kb.append([InlineKeyboardButton(text=t("back", ulang(u)), callback_data="bk")])
     await take_over(c, text, InlineKeyboardMarkup(inline_keyboard=kb))
