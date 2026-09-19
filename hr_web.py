@@ -38,11 +38,12 @@ from datetime import datetime, date
 
 log = logging.getLogger("sumskaya.hr_web")
 
-VERSION = "hr_web 1.1 · 18.09.2026"
+VERSION = "hr_web 1.2 · 19.09.2026"
 
 M = None          # модуль bot.py — берём оттуда таблицы, роли, bot
 _runner = None
-TOKEN_TTL = 24 * 3600
+TOKEN_TTL = 24 * 3600           # ссылка из бота
+COOKIE_TTL = 90 * 24 * 3600     # вход в браузере помнится 90 дней
 CACHE_TTL = 60
 _cache = {"ts": 0, "data": None}
 
@@ -74,6 +75,28 @@ def check_token(token: str):
         if int(exp) < time.time():
             return None
         return int(uid)
+    except Exception:
+        return None
+
+
+def check_webapp(init_data: str):
+    """uid из Telegram Mini App (кнопка внутри Telegram), если подпись
+    initData верна (ключ — токен бота) и ей не больше суток."""
+    if not init_data:
+        return None
+    try:
+        from urllib.parse import parse_qsl
+        pairs = dict(parse_qsl(init_data, keep_blank_values=True))
+        got = pairs.pop("hash", "")
+        check = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
+        secret = hmac.new(b"WebAppData", str(getattr(M, "BOT_TOKEN", "")).encode(),
+                          hashlib.sha256).digest()
+        good = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(got, good):
+            return None
+        if time.time() - int(pairs.get("auth_date", "0")) > 24 * 3600:
+            return None
+        return int(json.loads(pairs.get("user", "{}")).get("id"))
     except Exception:
         return None
 
@@ -298,6 +321,43 @@ def build_records(values: list, formulas: list, header_row: int) -> dict:
     }
 
 
+def _in_progress() -> list:
+    """Кандидаты из чек-листа HR, которые ещё не дошли до «Активен» —
+    чтобы новые люди были видны в архиве сразу, до записи в Registro."""
+    out = []
+    try:
+        final = M.HR_STAGES[-1]
+        apps = M.applicants_rows()
+        for i, r in enumerate(M.rows(M.HR_WS, force=True), start=2):
+            stage = str(r.get("Статус", "")).strip()
+            if not str(r.get("ФИО", "")).strip() or stage == final:
+                continue
+            app = {}
+            try:
+                app = apps[int(str(r.get("RowKey", "")).strip()) - 2]
+            except Exception:
+                pass
+            inicio = parse_date(app.get("Fecha de inicio", ""))
+            out.append({
+                "row": -i, "name": str(r.get("ФИО", "")).strip(),
+                "local": canon_local(r.get("Локаль", "")), "dep": "",
+                "puesto": str(r.get("Должность", "")).strip(),
+                "tipo": "", "estado": "proceso", "etapa": stage,
+                "alta": "", "baja": "", "inicio": _iso(inicio),
+                "periodo": "", "motivo": "", "sex": "",
+                "horas": str(app.get("Número de horas bajo contrato", "")).strip(),
+                "horario": "", "nac": _iso(parse_date(app.get("Fecha de nacimiento", ""))),
+                "nie": str(app.get("NIE/TIE", "")).strip(),
+                "tel": str(app.get("Teléfono", "")).strip(),
+                "email": str(app.get("Correo electrónico", "")).strip(),
+                "iban": mask_iban(app.get("IBAN", "")), "domicilio": str(app.get("Domicilio", "")).strip(),
+                "contrato": "", "extra": {"Заявка от": str(r.get("Дата заявки", "")).strip()},
+            })
+    except Exception as e:
+        log.warning("hr_web: чек-лист не прочитан: %s", e)
+    return out
+
+
 def _load_sync() -> dict:
     w = M.registro_ws()
     header_row = M.registro_header_row(w)
@@ -308,6 +368,8 @@ def _load_sync() -> dict:
         log.warning("hr_web: формулы не прочитались (%s) — без ссылок на контракты", e)
         formulas = []
     data = build_records(values, formulas, header_row)
+    in_reg = {_norm(r["name"]) for r in data["records"]}
+    data["records"] += [r for r in _in_progress() if _norm(r["name"]) not in in_reg]
     data["updated"] = M.now_local().strftime("%d.%m.%Y %H:%M")
     return data
 
@@ -334,35 +396,43 @@ def _page_html() -> str:
 def _build_app():
     from aiohttp import web
 
+    def _set_cookie(resp, uid):
+        resp.set_cookie(COOKIE, make_token(uid, COOKIE_TTL), max_age=COOKIE_TTL,
+                        httponly=True, secure=True, samesite="None")
+
     def _uid_from(request):
-        uid = check_token(request.cookies.get(COOKIE, ""))
+        uid = check_token(request.cookies.get(COOKIE, "")) \
+            or check_webapp(request.headers.get("X-TG-Init-Data", ""))
         return uid if uid and _is_patron(uid) else None
 
     async def page(request):
+        # Страница сама по себе без данных — отдаём всегда; данные даёт
+        # только /hr/api/data после проверки (cookie или Telegram Mini App).
         t = request.query.get("t")
         if t:
             uid = check_token(t)
             if not uid or not _is_patron(uid):
                 return web.Response(text=_denied(), content_type="text/html", status=403)
             resp = web.HTTPFound("/hr")
-            resp.set_cookie(COOKIE, t, max_age=TOKEN_TTL, httponly=True,
-                            secure=True, samesite="Lax")
+            _set_cookie(resp, uid)
             raise resp
-        if not _uid_from(request):
-            return web.Response(text=_denied(), content_type="text/html", status=403)
         return web.Response(text=_page_html(), content_type="text/html",
                             headers={"Cache-Control": "no-store",
                                      "X-Robots-Tag": "noindex"})
 
     async def api(request):
-        if not _uid_from(request):
+        uid = _uid_from(request)
+        if not uid:
             return web.json_response({"error": "auth"}, status=401)
         try:
             data = await load_data(force=request.query.get("force") == "1")
         except Exception as e:
             log.error("hr_web: ошибка чтения Registro: %s", e, exc_info=True)
             return web.json_response({"error": f"{type(e).__name__}: {e}"}, status=500)
-        return web.json_response(data, headers={"Cache-Control": "no-store"})
+        resp = web.json_response(data, headers={"Cache-Control": "no-store"})
+        if not check_token(request.cookies.get(COOKIE, "")):
+            _set_cookie(resp, uid)   # вошли из Telegram — запомним и для браузера
+        return resp
 
     async def health(request):
         return web.Response(text="ok")
@@ -379,8 +449,8 @@ def _denied() -> str:
     return ("<!doctype html><meta charset=utf-8><meta name=viewport "
             "content='width=device-width,initial-scale=1'><title>Архив сотрудников</title>"
             "<body style='font:16px system-ui;padding:40px 16px;max-width:520px;margin:auto'>"
-            "<h2>Ссылка устарела</h2><p>Откройте бота и отправьте <b>/archivo</b> — "
-            "придёт новая ссылка на 24 часа.</p></body>")
+            "<h2>Ссылка устарела</h2><p>Откройте архив кнопкой <b>«Архив»</b> в боте "
+            "(слева от поля ввода) или отправьте <b>/archivo</b>.</p></body>")
 
 
 async def _start_web(*args, **kwargs):
@@ -406,9 +476,25 @@ def setup(dp, main_module):
     M = main_module
     from aiogram import F
     from aiogram.filters import Command
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    from aiogram.types import (InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo,
+                               MenuButtonWebApp)
 
     dp.startup.register(_start_web)
+
+    async def _menu_buttons(*args, **kwargs):
+        """Кнопка «Архив» слева от поля ввода — у каждого Патрона."""
+        base = web_url()
+        if not base:
+            return
+        for pid in M.patrons():
+            try:
+                await M.bot.set_chat_menu_button(
+                    chat_id=pid,
+                    menu_button=MenuButtonWebApp(text="Архив", web_app=WebAppInfo(url=f"{base}/hr")))
+            except Exception as e:
+                log.warning("hr_web: кнопка меню для %s не поставлена: %s", pid, e)
+
+    dp.startup.register(_menu_buttons)
 
     async def send_link(chat_id: int, uid: int):
         base = web_url()
@@ -419,14 +505,19 @@ def setup(dp, main_module):
                 "<code>HR_WEB_URL</code> — публичный адрес сервиса.")
             return
         link = f"{base}/hr?t={make_token(uid)}"
-        rows = [[InlineKeyboardButton(text="🌐 Открыть архив сотрудников", url=link)]]
+        rows = [[InlineKeyboardButton(text="🌐 Открыть архив сотрудников",
+                                      web_app=WebAppInfo(url=f"{base}/hr"))],
+                [InlineKeyboardButton(text="💻 Открыть в браузере", url=link)]]
         if hasattr(M, "nav_row"):
             rows.append(M.nav_row())
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
         await M.bot.send_message(
             chat_id,
-            "🌐 <b>Архив сотрудников</b>\n\nЛичная ссылка, действует 24 часа. "
-            "Не пересылайте её — по ней открываются данные сотрудников.",
+            "🌐 <b>Архив сотрудников</b>\n\n"
+            "• Внутри Telegram — кнопка ниже или кнопка <b>«Архив»</b> слева от поля ввода, "
+            "открывается сразу.\n"
+            "• В браузере компьютера — «💻 Открыть в браузере» один раз, дальше адрес "
+            "можно сохранить в закладки: вход помнится 90 дней.",
             reply_markup=kb)
 
     @dp.message(Command("archivo"))

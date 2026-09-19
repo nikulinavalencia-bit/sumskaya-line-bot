@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
 <title>Архив сотрудников</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
 :root{
   --bg:#f6f5f2;--card:#fff;--ink:#1d1d1b;--muted:#6f6d68;--line:#e4e2dc;
@@ -56,6 +57,10 @@ tbody tr.click:hover{background:var(--chip);cursor:pointer}
 .tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px}
 .tag.a{background:var(--acc-soft);color:var(--acc)}
 .tag.b{background:var(--red-soft);color:var(--red)}
+.tag.p{background:#fff1d6;color:#8a5a00}
+@media (prefers-color-scheme:dark){.tag.p{background:#3a2e14;color:#f0c46a}}
+td.pc{cursor:pointer}
+td.pc:hover{background:var(--acc-soft)}
 .muted{color:var(--muted)}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
 .seg button{border:0;background:var(--card);padding:6px 11px;cursor:pointer}
@@ -90,6 +95,7 @@ a{color:var(--acc)}
       <div class="chips" id="locChips"></div>
       <div class="seg" id="estadoSeg">
         <button data-v="activo" class="on">Работают</button>
+        <button data-v="proceso">В оформлении</button>
         <button data-v="baja">Уволены</button>
         <button data-v="all">Все</button>
       </div>
@@ -108,7 +114,17 @@ a{color:var(--acc)}
 
   <div class="kpis" id="kpis"></div>
 
-  <div class="grid2">
+  <div id="listAnchor"></div>
+  <div class="card">
+    <div class="row">
+      <h2 style="margin:0" id="listTitle">Сотрудники</h2>
+      <button class="btn primary" id="csvList">Выгрузить список CSV</button>
+    </div>
+    <div class="tbl-wrap"><table id="list"></table></div>
+    <div class="pager" id="pager"></div>
+  </div>
+
+  <div class="grid2" style="margin-top:14px">
     <div class="card">
       <div class="row"><h2 style="margin:0">Локаль × Departamento</h2>
         <button class="btn" id="csvPivot">CSV</button></div>
@@ -121,14 +137,6 @@ a{color:var(--acc)}
     </div>
   </div>
 
-  <div class="card">
-    <div class="row">
-      <h2 style="margin:0" id="listTitle">Сотрудники</h2>
-      <button class="btn primary" id="csvList">Выгрузить список CSV</button>
-    </div>
-    <div class="tbl-wrap"><table id="list"></table></div>
-    <div class="pager" id="pager"></div>
-  </div>
 </div>
 
 <dialog id="dlg"><div class="dlg" id="dlgBody"></div></dialog>
@@ -138,6 +146,9 @@ const LOCS = ["REINA","FRANCIA","BAKERY","BOI BOI","OFFICE"];
 const LOC_NAME = {"REINA":"Reina","FRANCIA":"Francia","BAKERY":"Bakery","BOI BOI":"Boi Boi","OFFICE":"Office"};
 const PAGE = 50;
 let ALL = [], META = {};
+try{ if(window.Telegram && Telegram.WebApp){ Telegram.WebApp.ready(); Telegram.WebApp.expand(); } }catch(e){}
+const TAG = r => r.estado==="activo" ? '<span class="tag a">работает</span>'
+  : r.estado==="proceso" ? `<span class="tag p">оформление</span>` : '<span class="tag b">уволен(а)</span>';
 const S = {locs:new Set(), estado:"activo", q:"", dep:"", puesto:"", sex:"", asof:"", altaFrom:"", altaTo:"", sort:"name", dir:1, page:0};
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -147,8 +158,10 @@ const norm = s => String(s||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/
 async function load(force){
   $("meta").textContent = "Загрузка Registro…";
   try{
-    const r = await fetch("/hr/api/data" + (force ? "?force=1" : ""), {credentials:"same-origin"});
-    if(r.status === 401){ document.body.innerHTML = '<div class="wrap"><h2>Ссылка устарела</h2><p>Отправьте боту <b>/archivo</b>, чтобы получить новую.</p></div>'; return; }
+    const tg = window.Telegram && Telegram.WebApp;
+    const hdr = (tg && tg.initData) ? {"X-TG-Init-Data": tg.initData} : {};
+    const r = await fetch("/hr/api/data" + (force ? "?force=1" : ""), {credentials:"same-origin", headers:hdr});
+    if(r.status === 401){ document.body.innerHTML = '<div class="wrap"><h2>Нужен вход</h2><p>Откройте архив из бота: кнопка <b>«Архив»</b> слева от поля ввода или команда <b>/archivo</b>. В браузере вход потом помнится 90 дней.</p></div>'; return; }
     const d = await r.json();
     if(d.error) throw new Error(d.error);
     ALL = d.records; META = d;
@@ -212,6 +225,7 @@ function render(){
   const kp = [
     [rows.length, S.asof ? `числились на ${fmt(S.asof)}` : "в выборке"],
     [act, "работают сейчас"],
+    [base.filter(r=>r.estado==="proceso").length, "в оформлении"],
     [base.filter(r=>r.estado==="baja").length, "уволены (всего)"],
     [base.filter(r=>r.alta.startsWith(ym)).length, "приняты в этом месяце"],
     [base.filter(r=>r.baja.startsWith(ym)).length, "уволены в этом месяце"],
@@ -233,7 +247,7 @@ function renderPivot(rows){
   deps.forEach(d=>{
     const c = locs.map(l=>cnt(l,d)), s = c.reduce((a,b)=>a+b,0);
     PIVOT.push([d, ...c, s]);
-    h += `<tr><td>${esc(d)}</td>${c.map(v=>`<td class="n">${v||'<span class="muted">·</span>'}</td>`).join("")}<td class="n"><b>${s}</b></td></tr>`;
+    h += `<tr><td class="pc" data-d="${esc(d)}">${esc(d)}</td>${c.map((v,k)=>`<td class="n pc" data-l="${esc(locs[k])}" data-d="${esc(d)}">${v||'<span class="muted">·</span>'}</td>`).join("")}<td class="n pc" data-d="${esc(d)}"><b>${s}</b></td></tr>`;
   });
   const tot = locs.map(l=>rows.filter(r=>r.local===l).length);
   PIVOT.push(["Итого", ...tot, rows.length]);
@@ -267,7 +281,7 @@ function renderList(rows){
   $("listTitle").textContent = `Сотрудники · ${rows.length}`;
   let h = `<thead><tr>${COLS.map(([k,l])=>`<th data-k="${k}">${l}${S.sort===k?(S.dir>0?" ▲":" ▼"):""}</th>`).join("")}</tr></thead><tbody>`;
   part.forEach(r=>{
-    h += `<tr class="click" data-row="${r.row}"><td>${esc(r.name)}</td><td>${esc(LOC_NAME[r.local]||r.local)}</td><td>${esc(r.dep)}</td><td>${esc(r.puesto)}</td><td>${esc(r.horas)}</td><td>${fmt(r.alta)}</td><td>${fmt(r.baja)}</td><td>${r.estado==="activo"?'<span class="tag a">работает</span>':'<span class="tag b">уволен(а)</span>'}</td></tr>`;
+    h += `<tr class="click" data-row="${r.row}"><td>${esc(r.name)}</td><td>${esc(LOC_NAME[r.local]||r.local)}</td><td>${esc(r.dep)}</td><td>${esc(r.puesto)}</td><td>${esc(r.horas)}</td><td>${fmt(r.alta)||(r.inicio?'<span class="muted">план '+fmt(r.inicio)+'</span>':'')}</td><td>${fmt(r.baja)}</td><td>${TAG(r)}</td></tr>`;
   });
   $("list").innerHTML = rows.length ? h+"</tbody>" : `<tr><td class="muted">Никого под этот фильтр</td></tr>`;
   $("pager").innerHTML = pages>1 ? `<button class="btn" data-p="-1" ${S.page===0?"disabled":""}>←</button><span class="sub">${S.page+1} / ${pages}</span><button class="btn" data-p="1" ${S.page>=pages-1?"disabled":""}>→</button>` : "";
@@ -275,14 +289,14 @@ function renderList(rows){
 
 function card(r){
   const f = [["Локаль",LOC_NAME[r.local]||r.local],["Departamento",r.dep],["Puesto",r.puesto],["Tipo de contrato",r.tipo],
-    ["Fecha de alta",fmt(r.alta)],["Fecha de baja",fmt(r.baja)],["Período",r.periodo],["Motivo",r.motivo],
+    ["Fecha de alta",fmt(r.alta)],["Fecha de inicio (план)",fmt(r.inicio)],["Fecha de baja",fmt(r.baja)],["Período",r.periodo],["Motivo",r.motivo],
     ["Часы",r.horas],["Horario",r.horario],["Пол",r.sex],["Дата рождения",fmt(r.nac)],["NIE/TIE",r.nie],
     ["Телефон",r.tel],["Email",r.email],["IBAN",r.iban],["Domicilio",r.domicilio]];
   Object.entries(r.extra||{}).forEach(([k,v])=>f.push([k,v]));
   $("dlgBody").innerHTML = `<div class="row" style="margin:0"><h2 style="margin:0;font-size:18px">${esc(r.name)}</h2>
     <button class="btn" onclick="dlg.close()">✕</button></div>
-    ${r.estado==="activo"?'<span class="tag a">работает</span>':'<span class="tag b">уволен(а)</span>'}
-    <span class="sub">· строка ${r.row} в Registro</span>
+    ${TAG(r)}
+    <span class="sub">· ${r.row>0 ? "строка "+r.row+" в Registro" : "в чек-листе HR, этап: "+esc(r.etapa||"")}</span>
     <dl>${f.filter(x=>x[1]).map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}
     ${r.contrato?`<dt>Контракт</dt><dd><a href="${esc(r.contrato)}" target="_blank" rel="noopener">папка на Диске ↗</a></dd>`:""}</dl>`;
   $("dlg").showModal();
@@ -304,6 +318,13 @@ $("estadoSeg").onclick = e=>{const b=e.target.closest("button"); if(!b||S.asof) 
 $("list").onclick = e=>{
   const th=e.target.closest("th"); if(th){const k=th.dataset.k; S.dir = S.sort===k ? -S.dir : 1; S.sort=k; render(); return;}
   const tr=e.target.closest("tr.click"); if(tr){const r=ALL.find(x=>x.row==tr.dataset.row); if(r) card(r);}
+};
+$("pivot").onclick = e=>{
+  const td = e.target.closest("td.pc"); if(!td) return;
+  S.locs.clear(); if(td.dataset.l) S.locs.add(td.dataset.l);
+  S.dep = td.dataset.d==="—" ? "" : (td.dataset.d||""); S.page=0;
+  buildOptions(); render();
+  document.getElementById("listAnchor").scrollIntoView({behavior:"smooth"});
 };
 $("pager").onclick = e=>{const b=e.target.closest("button"); if(!b) return; S.page+=+b.dataset.p; render();};
 $("dlg").addEventListener("click", e=>{ if(e.target.id==="dlg") $("dlg").close(); });
