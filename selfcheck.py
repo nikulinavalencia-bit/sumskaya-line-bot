@@ -16,12 +16,26 @@ import os
 from datetime import datetime
 
 from aiogram.filters import Command
-from aiogram.types import Message, BotCommand
+from aiogram.types import (Message, BotCommand, BotCommandScopeDefault,
+                           BotCommandScopeChat, MenuButtonCommands)
 
 log = logging.getLogger("selfcheck")
 
 core = None
 STARTED_AT = None
+
+
+def owner_ids() -> set:
+    """Кто видит /version. Переменная Railway OWNER_IDS (через запятую);
+    если не задана — все Патроны."""
+    raw = os.environ.get("OWNER_IDS", "").replace(" ", "")
+    ids = {int(x) for x in raw.split(",") if x.strip().lstrip("-").isdigit()}
+    if ids:
+        return ids
+    try:
+        return set(core.patrons())
+    except Exception:
+        return set()
 
 
 def _src() -> str:
@@ -168,14 +182,7 @@ def report() -> str:
 
 
 async def cmd_version(m: Message):
-    u = core.get_user(m.from_user.id)
-    allowed = core.is_patron(u)
-    try:
-        import fin_block
-        allowed = allowed or fin_block.is_findir(u, m.from_user.id)
-    except Exception:
-        pass
-    if not allowed:
+    if m.from_user.id not in owner_ids():
         return
     try:
         await m.answer(report())
@@ -187,16 +194,33 @@ async def cmd_version(m: Message):
 async def _on_startup():
     global STARTED_AT
     STARTED_AT = core.now_local()
+    # Кнопка «Меню»: всем — только «Обновить»; Патронам — рабочие команды;
+    # «Что залито» — только владельцу (OWNER_IDS).
+    start_cmd = BotCommand(command="start", description="🔄 Обновить / открыть меню")
+    work = [
+        BotCommand(command="archivo", description="🌐 Архив сотрудников"),
+        BotCommand(command="vacaciones", description="🏖 Расчёт отпуска"),
+        BotCommand(command="controllaboral", description="📤 Файл для Control Laboral"),
+    ]
     try:
-        await core.bot.set_my_commands([
-            BotCommand(command="start", description="🔄 Обновить / открыть меню"),
-            BotCommand(command="version", description="🧾 Что залито на сервер"),
-            BotCommand(command="archivo", description="🌐 Архив сотрудников"),
-            BotCommand(command="controllaboral", description="📤 Файл для Control Laboral"),
-            BotCommand(command="vacaciones", description="🏖 Расчёт отпуска"),
-        ])
+        await core.bot.set_my_commands([start_cmd], scope=BotCommandScopeDefault())
     except Exception as ex:
         log.warning("не смог обновить список команд: %s", ex)
+    owners = owner_ids()
+    try:
+        patrons = set(core.patrons())
+    except Exception:
+        patrons = set()
+    for pid in patrons | owners:
+        cmds = [start_cmd] + (work if pid in patrons else [])
+        if pid in owners:
+            cmds.append(BotCommand(command="version", description="🧾 Что залито на сервер"))
+        try:
+            await core.bot.set_my_commands(cmds, scope=BotCommandScopeChat(chat_id=pid))
+            # вернуть кнопку «Меню» на место (её временно занимал «Архив»)
+            await core.bot.set_chat_menu_button(chat_id=pid, menu_button=MenuButtonCommands())
+        except Exception as ex:
+            log.warning("команды для %s не выставлены: %s", pid, ex)
 
 
 def setup(dp, core_module):

@@ -38,7 +38,7 @@ from datetime import datetime, date
 
 log = logging.getLogger("sumskaya.hr_web")
 
-VERSION = "hr_web 1.2 · 19.09.2026"
+VERSION = "hr_web 1.3 · 19.09.2026"
 
 M = None          # модуль bot.py — берём оттуда таблицы, роли, bot
 _runner = None
@@ -449,8 +449,8 @@ def _denied() -> str:
     return ("<!doctype html><meta charset=utf-8><meta name=viewport "
             "content='width=device-width,initial-scale=1'><title>Архив сотрудников</title>"
             "<body style='font:16px system-ui;padding:40px 16px;max-width:520px;margin:auto'>"
-            "<h2>Ссылка устарела</h2><p>Откройте архив кнопкой <b>«Архив»</b> в боте "
-            "(слева от поля ввода) или отправьте <b>/archivo</b>.</p></body>")
+            "<h2>Ссылка устарела</h2><p>Откройте архив из бота: HR → «🌐 Архив сотрудников» "
+            "или команда <b>/archivo</b>.</p></body>")
 
 
 async def _start_web(*args, **kwargs):
@@ -476,25 +476,11 @@ def setup(dp, main_module):
     M = main_module
     from aiogram import F
     from aiogram.filters import Command
-    from aiogram.types import (InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo,
-                               MenuButtonWebApp)
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 
     dp.startup.register(_start_web)
 
-    async def _menu_buttons(*args, **kwargs):
-        """Кнопка «Архив» слева от поля ввода — у каждого Патрона."""
-        base = web_url()
-        if not base:
-            return
-        for pid in M.patrons():
-            try:
-                await M.bot.set_chat_menu_button(
-                    chat_id=pid,
-                    menu_button=MenuButtonWebApp(text="Архив", web_app=WebAppInfo(url=f"{base}/hr")))
-            except Exception as e:
-                log.warning("hr_web: кнопка меню для %s не поставлена: %s", pid, e)
-
-    dp.startup.register(_menu_buttons)
+    # Кнопку меню не трогаем — там остаются команды бота (решение 19.09).
 
     async def send_link(chat_id: int, uid: int):
         base = web_url()
@@ -514,8 +500,7 @@ def setup(dp, main_module):
         await M.bot.send_message(
             chat_id,
             "🌐 <b>Архив сотрудников</b>\n\n"
-            "• Внутри Telegram — кнопка ниже или кнопка <b>«Архив»</b> слева от поля ввода, "
-            "открывается сразу.\n"
+            "• Внутри Telegram — кнопка ниже, открывается сразу.\n"
             "• В браузере компьютера — «💻 Открыть в браузере» один раз, дальше адрес "
             "можно сохранить в закладки: вход помнится 90 дней.",
             reply_markup=kb)

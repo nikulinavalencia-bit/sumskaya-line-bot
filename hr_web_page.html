@@ -161,7 +161,7 @@ async function load(force){
     const tg = window.Telegram && Telegram.WebApp;
     const hdr = (tg && tg.initData) ? {"X-TG-Init-Data": tg.initData} : {};
     const r = await fetch("/hr/api/data" + (force ? "?force=1" : ""), {credentials:"same-origin", headers:hdr});
-    if(r.status === 401){ document.body.innerHTML = '<div class="wrap"><h2>Нужен вход</h2><p>Откройте архив из бота: кнопка <b>«Архив»</b> слева от поля ввода или команда <b>/archivo</b>. В браузере вход потом помнится 90 дней.</p></div>'; return; }
+    if(r.status === 401){ document.body.innerHTML = '<div class="wrap"><h2>Нужен вход</h2><p>Откройте архив из бота: HR → «🌐 Архив сотрудников» или команда <b>/archivo</b>. В браузере вход потом помнится 90 дней.</p></div>'; return; }
     const d = await r.json();
     if(d.error) throw new Error(d.error);
     ALL = d.records; META = d;
