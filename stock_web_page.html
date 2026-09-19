@@ -1,0 +1,1076 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Ritmo OPS · Приходные накладные</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --ground: #eef1ef; --surface: #ffffff; --surface-2: #f5f7f6;
+    --ink: #14201c; --ink-soft: #5c6b65; --line: #dde3e0;
+    --accent: #14624f; --accent-soft: #dcefe8;
+    --warn: #8a5a0c; --warn-soft: #fbeed3;
+    --danger: #a5382c; --danger-soft: #f9e1dd;
+    --info: #2a5673; --info-soft: #dfeaf2;
+    --muted-soft: #e8ecea;
+    --radius: 12px;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0e1513; --surface: #161f1c; --surface-2: #1c2723;
+      --ink: #e3eae7; --ink-soft: #94a39d; --line: #27332e;
+      --accent: #57c9a8; --accent-soft: #10312a;
+      --warn: #e0ab5f; --warn-soft: #33270f;
+      --danger: #e98a7c; --danger-soft: #38201c;
+      --info: #8ab6d6; --info-soft: #14252f;
+      --muted-soft: #222c28;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0e1513; --surface: #161f1c; --surface-2: #1c2723;
+    --ink: #e3eae7; --ink-soft: #94a39d; --line: #27332e;
+    --accent: #57c9a8; --accent-soft: #10312a;
+    --warn: #e0ab5f; --warn-soft: #33270f;
+    --danger: #e98a7c; --danger-soft: #38201c;
+    --info: #8ab6d6; --info-soft: #14252f;
+    --muted-soft: #222c28;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--ground); color: var(--ink);
+    font-family: Manrope, system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 15px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 16px 56px; }
+  button, input, select { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  header.bar {
+    position: sticky; top: 0; z-index: 5; background: var(--ground);
+    border-bottom: 1px solid var(--line); padding: 12px 0 10px;
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  }
+  .brand { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 700; letter-spacing: .02em; color: var(--accent); margin-bottom: 2px; }
+  .brand b { font-weight: 700; margin-left: 3px; padding: 0 5px; border-radius: 4px; background: var(--accent); color: var(--surface); font-size: 11.5px; letter-spacing: .08em; }
+  .brand-mark { width: 14px; height: 14px; border-radius: 4px; background: linear-gradient(135deg, var(--accent) 0 50%, transparent 50%), var(--accent-soft); box-shadow: inset 0 0 0 1.5px var(--accent); }
+  h1 { font-size: 19px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--ink-soft); font-size: 13px; }
+  .spacer { flex: 1 1 auto; }
+  select.loc, .btn, .ghost {
+    border: 1px solid var(--line); background: var(--surface);
+    border-radius: 9px; padding: 7px 12px; cursor: pointer; font-size: 14px;
+  }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--surface); font-weight: 600; }
+  .btn.danger { color: var(--danger); }
+  .btn:disabled { opacity: .45; cursor: default; }
+  .ghost { color: var(--ink-soft); font-size: 13px; }
+
+  nav.views { display: flex; gap: 6px; margin-top: 14px; }
+  nav.views button {
+    border: 0; background: transparent; padding: 6px 12px; border-radius: 8px;
+    color: var(--ink-soft); font-weight: 600; cursor: pointer;
+  }
+  nav.views button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 0 0 1px var(--line); }
+
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 14px; }
+  .chip {
+    background: var(--surface); color: var(--ink-soft);
+    border: 1px solid var(--line); border-radius: 999px;
+    padding: 5px 12px; cursor: pointer; font-size: 13px; font-weight: 500;
+  }
+  .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+  .chip b { font-variant-numeric: tabular-nums; }
+
+  .tools { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; align-items: center; }
+  .tools input[type=search] {
+    flex: 1 1 240px; min-width: 0; border: 1px solid var(--line); background: var(--surface);
+    border-radius: 9px; padding: 7px 12px;
+  }
+  .tools select { border: 1px solid var(--line); background: var(--surface); border-radius: 9px; padding: 7px 10px; }
+
+  .note {
+    margin-top: 12px; padding: 10px 14px; border-radius: 10px; font-size: 13.5px;
+    background: var(--info-soft); color: var(--info);
+  }
+  .note.warn { background: var(--warn-soft); color: var(--warn); }
+
+  .list { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+  .row {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 12px 14px; display: grid; gap: 4px 14px; cursor: pointer;
+    grid-template-columns: minmax(0, 2.2fr) 110px minmax(0, 1.2fr) 130px 190px;
+    align-items: center; text-align: left; width: 100%;
+  }
+  .row:hover { border-color: var(--ink-soft); }
+  .row.attention { border-left: 3px solid var(--warn); }
+  .row.bad { border-left: 3px solid var(--danger); }
+  .row.done { border-left: 3px solid var(--accent); }
+  .num { font-weight: 600; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13.5px; overflow-wrap: anywhere; }
+  .meta { color: var(--ink-soft); font-size: 12.5px; }
+  .sum { font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  .sum .flag { font-weight: 700; margin-left: 3px; }
+  .flag.ok { color: var(--accent); }
+  .flag.bad { color: var(--danger); }
+  .match { font-size: 12.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--warn-soft); color: var(--warn); justify-self: start; white-space: nowrap; }
+  .match.full { background: var(--accent-soft); color: var(--accent); }
+  .pill { display: inline-block; font-size: 12.5px; font-weight: 600; padding: 3px 10px; border-radius: 999px; white-space: nowrap; }
+  .pill.ok { background: var(--accent-soft); color: var(--accent); }
+  .pill.info { background: var(--info-soft); color: var(--info); }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); }
+  .pill.bad { background: var(--danger-soft); color: var(--danger); }
+  .pill.muted { background: var(--muted-soft); color: var(--ink-soft); }
+
+  .empty, .error {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 28px 20px; text-align: center; color: var(--ink-soft); margin-top: 14px;
+  }
+  .error { border-color: var(--danger); color: var(--danger); }
+  footer { color: var(--ink-soft); font-size: 12.5px; margin-top: 22px; }
+
+  /* карточка накладной — редактор как в Билз: документ слева, строки справа */
+  .sheet { position: fixed; inset: 0; z-index: 20; background: var(--ground); display: none; flex-direction: column; }
+  .sheet.open { display: flex; }
+  .ed-top {
+    display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap;
+    padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--line);
+  }
+  .ed-top .back { align-self: center; }
+  .hf { display: flex; flex-direction: column; min-width: 0; }
+  .hf label { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-soft); }
+  .hf input, .hf select {
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; background: var(--surface); font-size: 14.5px;
+  }
+  .hf input.num { font-family: "IBM Plex Mono", ui-monospace, monospace; font-weight: 600; width: 170px; }
+  .hf .combo { width: 260px; min-width: 0; }
+  .ed-top .st { margin-left: auto; align-self: center; text-align: right; }
+  .ed-body { flex: 1 1 auto; display: flex; min-height: 0; }
+  .viewer { width: 38%; max-width: 620px; min-width: 300px; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--surface-2); }
+  .viewer.hidden { display: none; }
+  .vbar { display: flex; gap: 6px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--ink-soft); flex-wrap: wrap; }
+  .vbar button { border: 1px solid var(--line); background: var(--surface); border-radius: 7px; padding: 3px 9px; cursor: pointer; font-size: 13px; }
+  .vbar button:disabled { opacity: .4; cursor: default; }
+  .vpane { flex: 1 1 auto; overflow: auto; display: flex; align-items: flex-start; justify-content: center; padding: 10px; }
+  .vpane img { max-width: 100%; transform-origin: top center; transition: transform .15s; }
+  .vpane iframe { width: 100%; height: 100%; min-height: 70vh; border: 0; background: #fff; }
+  .ed-main { flex: 1 1 auto; overflow: auto; padding: 12px 16px 20px; min-width: 0; }
+  .docline { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 8px; }
+  .docline .hf input { width: 220px; }
+  .docline .hf input.nif { width: 130px; }
+
+  table.lines { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  table.lines th {
+    text-align: left; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--ink-soft); padding: 8px 6px; background: var(--surface-2); border-bottom: 1px solid var(--line); vertical-align: bottom;
+  }
+  table.lines th small { display: block; font-weight: 500; text-transform: none; letter-spacing: 0; }
+  table.lines td { padding: 6px; vertical-align: middle; border-bottom: 1px solid var(--line); font-size: 13.5px; }
+  table.lines tr.unmatched td.pcell { background: var(--warn-soft); }
+  table.lines tr.skipped td { opacity: .55; }
+  table.lines tr.skipped td.pcell { opacity: 1; }
+  .r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .lname { font-weight: 600; }
+  .lname input { width: 100%; min-width: 140px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+  .code { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11.5px; color: var(--ink-soft); }
+  .how { font-size: 11px; color: var(--ink-soft); }
+  .cell-in { width: 72px; border: 1px solid transparent; border-radius: 6px; padding: 4px 5px; background: transparent; text-align: right; font-variant-numeric: tabular-nums; }
+  .cell-in:hover { border-color: var(--line); }
+  .cell-in:focus { border-color: var(--accent); background: var(--surface); outline: none; }
+  .cell-in.pct { width: 46px; }
+  .cell-in.money { width: 82px; font-weight: 700; }
+  .unit { font-size: 11.5px; color: var(--ink-soft); }
+  .lstore { border: 1px solid transparent; background: transparent; border-radius: 6px; padding: 4px; max-width: 130px; font-size: 13px; }
+  .lstore:hover { border-color: var(--line); }
+  .sug { margin-top: 4px; font-size: 12px; }
+  .sug button { border: 1px dashed var(--accent); color: var(--accent); background: transparent; border-radius: 7px; padding: 1px 7px; cursor: pointer; font-size: 12px; }
+  .skipbox { display: flex; gap: 5px; align-items: center; font-size: 12px; color: var(--ink-soft); margin-top: 3px; }
+  .rm { border: 0; background: transparent; color: var(--ink-soft); cursor: pointer; font-size: 16px; padding: 2px 6px; }
+  .rm:hover { color: var(--danger); }
+  .addrow { margin-top: 8px; border: 1px dashed var(--line); background: transparent; border-radius: 8px; padding: 6px 12px; cursor: pointer; color: var(--ink-soft); }
+  .addrow:hover { color: var(--ink); border-color: var(--ink-soft); }
+
+  .combo { position: relative; min-width: 180px; }
+  .combo input { width: 100%; border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; background: var(--surface); font-size: 13.5px; }
+  .combo.set input { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .combo ul {
+    position: absolute; z-index: 30; left: 0; min-width: 100%; width: max-content; max-width: 420px; top: 100%; margin: 4px 0 0; padding: 4px;
+    list-style: none; background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    max-height: 280px; overflow-y: auto; box-shadow: 0 8px 24px rgba(0,0,0,.14);
+  }
+  .combo li { padding: 6px 8px; border-radius: 7px; cursor: pointer; font-size: 13.5px; }
+  .combo li small { color: var(--ink-soft); }
+  .combo li[aria-selected="true"], .combo li:hover { background: var(--accent-soft); }
+
+  .ed-foot {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    padding: 10px 16px; background: var(--surface); border-top: 1px solid var(--line);
+  }
+  .ed-foot .left { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-right: auto; }
+  .tot { display: flex; gap: 18px; align-items: flex-end; }
+  .tot div { text-align: right; }
+  .tot label { display: block; font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-soft); }
+  .tot b { font-size: 16px; font-variant-numeric: tabular-nums; }
+  .tot .grand b { font-size: 22px; color: var(--accent); }
+  .tot .doc { font-size: 11.5px; color: var(--ink-soft); }
+  .tot .doc.bad { color: var(--danger); font-weight: 600; }
+  .warnbadge {
+    position: relative; width: 36px; height: 36px; border-radius: 50%; border: 0; cursor: pointer;
+    background: var(--danger-soft); color: var(--danger); font-weight: 700; font-size: 16px;
+  }
+  .warnbadge span { position: absolute; top: -4px; right: -4px; background: var(--danger); color: var(--surface); border-radius: 999px; font-size: 11px; padding: 0 5px; line-height: 17px; }
+  .warnbadge.ok { background: var(--accent-soft); color: var(--accent); }
+  .check { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--ink-soft); }
+  .linkbtn { border: 0; background: transparent; color: var(--ink-soft); cursor: pointer; font-size: 13px; padding: 4px 6px; text-decoration: underline; text-underline-offset: 3px; }
+  .linkbtn.danger { color: var(--danger); }
+  .showdoc { display: none; }
+
+  @media (max-width: 1000px) {
+    .viewer { position: fixed; inset: 0; z-index: 40; width: auto; max-width: none; min-width: 0; }
+    .showdoc { display: inline-block; }
+  }
+  table.plain { width: 100%; border-collapse: collapse; margin-top: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  table.plain th, table.plain td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; font-size: 13.5px; }
+  table.plain th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft); background: var(--surface-2); }
+  .up { color: var(--danger); font-weight: 700; }
+  .down { color: var(--accent); font-weight: 700; }
+  .spark { display: inline-flex; gap: 2px; align-items: flex-end; height: 18px; vertical-align: middle; }
+  .spark i { display: block; width: 4px; background: var(--ink-soft); border-radius: 1px; opacity: .55; }
+  .spark i:last-child { background: var(--accent); opacity: 1; }
+  .drop { position: fixed; inset: 0; z-index: 45; display: none; align-items: center; justify-content: center; background: color-mix(in srgb, var(--accent) 18%, transparent); }
+  .drop.on { display: flex; }
+  .drop div { background: var(--surface); border: 2px dashed var(--accent); border-radius: 14px; padding: 28px 36px; font-weight: 700; color: var(--accent); }
+  .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--surface); padding: 10px 16px; border-radius: 10px; font-size: 14px; z-index: 50; max-width: calc(100% - 32px); display: none; }
+  .toast.show { display: block; }
+
+  @media (max-width: 760px) {
+    .row { grid-template-columns: 1fr auto; }
+    .row .c-date { grid-column: 1; }
+    .row .c-store { display: none; }
+    .row .c-sum { grid-column: 2; grid-row: 1; }
+    .row .c-match { grid-column: 1; }
+    .row .c-st { grid-column: 2; text-align: right; }
+    table.lines { border: 0; background: transparent; }
+    table.lines thead { display: none; }
+    table.lines, table.lines tbody, table.lines tr, table.lines td { display: block; width: 100%; }
+    table.lines tr { margin-bottom: 8px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--surface); }
+    table.lines td { border: 0; }
+    table.lines td.r { text-align: left; }
+    table.lines td[data-l]::before { content: attr(data-l); display: inline-block; min-width: 118px; color: var(--ink-soft); font-size: 12px; }
+    .hide-m, table.lines td.hide-m { display: none; }
+    .combo { min-width: 0; }
+    .hf .combo, .hf input.num, .docline .hf input { width: 100%; }
+    .hf { flex: 1 1 140px; }
+    .ed-top .st { margin-left: 0; }
+    .tot { gap: 12px; }
+    .tot > div:not(.grand), .tot .doc { display: none; }
+    .tot .grand b { font-size: 19px; }
+    .ed-foot { padding: 8px 12px; gap: 8px; }
+    .ed-foot .left { width: 100%; gap: 2px 6px; }
+    .ed-foot .left .check, .linkbtn { font-size: 12px; }
+    .ed-top { padding: 8px 12px; gap: 8px; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap" id="main">
+  <header class="bar">
+    <div>
+      <div class="brand" aria-label="Ritmo OPS"><span class="brand-mark" aria-hidden="true"></span>Ritmo<b>OPS</b></div>
+      <h1>Приходные накладные</h1>
+      <div class="sub" id="who">Sumskaya Line</div>
+    </div>
+    <div class="spacer"></div>
+    <select class="loc" id="loc" aria-label="Локаль"></select>
+    <button class="ghost" id="refresh" type="button">Обновить</button>
+  </header>
+
+  <nav class="views" aria-label="Раздел">
+    <button type="button" data-view="docs" aria-pressed="true">Накладные</button>
+    <button type="button" data-view="prices" aria-pressed="false">Цены</button>
+    <button type="button" data-view="stock" aria-pressed="false">Остатки</button>
+  </nav>
+
+  <section id="v-docs">
+    <div class="tabs" id="tabs"></div>
+    <div class="tools">
+      <input type="search" id="q" placeholder="Поиск по номеру, поставщику, NIF…" aria-label="Поиск">
+      <select id="month" aria-label="Месяц"></select>
+      <button class="btn" id="upAll" type="button" hidden>Выгрузить в Syrve</button>
+      <button class="btn primary" id="upFiles" type="button">⬆ Загрузить накладные</button>
+      <input type="file" id="fileIn" multiple accept="image/*,application/pdf" hidden>
+    </div>
+    <div id="notes"></div>
+    <div class="list" id="list"></div>
+  </section>
+
+  <section id="v-prices" hidden>
+    <div class="tools">
+      <input type="search" id="pq" placeholder="Товар или поставщик…" aria-label="Поиск по ценам">
+      <select id="pf" aria-label="Фильтр">
+        <option value="changed">Только изменившиеся</option>
+        <option value="all">Все товары</option>
+      </select>
+    </div>
+    <div id="prices"></div>
+  </section>
+
+  <section id="v-stock" hidden>
+    <div class="tools">
+      <input type="search" id="sq" placeholder="Товар…" aria-label="Поиск по остаткам">
+      <select id="ss" aria-label="Склад"></select>
+    </div>
+    <div id="stock"></div>
+  </section>
+
+  <div class="empty" id="loading">Загружаю…</div>
+  <footer id="foot"></footer>
+</div>
+
+<div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="dTitle">
+  <div class="ed-top">
+    <button class="ghost back" type="button" id="close">← Накладные</button>
+    <h1 id="dTitle" class="visually-hidden" style="position:absolute;left:-9999px">Накладная</h1>
+    <div class="hf"><label for="h_numero">Номер</label><input id="h_numero" class="num" data-h="numero"></div>
+    <div class="hf"><label for="h_fecha">Дата</label><input id="h_fecha" type="date" data-h="fecha"></div>
+    <div class="hf" id="hfSup"><label>Поставщик Syrve</label><div id="supCombo"></div></div>
+    <div class="hf" id="hfStore"><label for="dStore">Склад по умолчанию</label><select id="dStore"></select></div>
+    <div class="st"><span id="dPill"></span><div class="sub" id="dSub"></div></div>
+  </div>
+  <div class="ed-body">
+    <aside class="viewer" id="viewer" aria-label="Документ">
+      <div class="vbar">
+        <button type="button" id="vHide">← Спрятать</button>
+        <button type="button" id="vPrev" aria-label="Предыдущая страница">‹</button>
+        <span id="vPage">1 / 1</span>
+        <button type="button" id="vNext" aria-label="Следующая страница">›</button>
+        <button type="button" id="vOut" aria-label="Уменьшить">−</button>
+        <span id="vZoom">100%</span>
+        <button type="button" id="vIn" aria-label="Увеличить">+</button>
+        <button type="button" id="vRot" aria-label="Повернуть">⟳</button>
+        <a id="vOpen" href="#" target="_blank" rel="noopener" style="margin-left:auto;font-size:13px;color:var(--accent)">Открыть</a>
+      </div>
+      <div class="vpane" id="vPane"></div>
+    </aside>
+    <main class="ed-main">
+      <div id="dNotes"></div>
+      <div class="docline" id="dDocline"></div>
+      <table class="lines" id="dLines">
+        <thead><tr>
+          <th>#</th><th>Описание</th><th>Товар Syrve</th>
+          <th class="r">В упаковке</th><th class="r">Упаковок</th><th class="r">Базовое<br>кол-во</th>
+          <th>Склад</th><th class="r hide-m">Цена ед.<small>без IVA</small></th><th class="r">IVA</th>
+          <th class="r">Сумма<small>без IVA</small></th><th class="r hide-m">Сумма<small>с IVA</small></th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <button type="button" class="addrow" id="addRow">+ Добавить строку</button>
+    </main>
+  </div>
+  <div class="ed-foot" id="dFoot"></div>
+</div>
+<div class="drop" id="drop" aria-hidden="true"><div>Отпустите файлы — загружу накладные</div></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  var tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
+
+  var S = {
+    rows: [], locales: [], viewer: {}, loc: "", tab: "all", q: "", month: "",
+    view: "docs", ref: {}, doc: null, edits: {}, head: {}, prices: null, stock: null
+  };
+  try { S.loc = localStorage.getItem("stk_loc") || ""; } catch (e) {}
+
+  var ST = {
+    "распознаётся":           { p: "info",  t: "Распознаётся" },
+    "не распознана":          { p: "bad",   t: "Не распознана" },
+    "требует редактирования": { p: "warn",  t: "Требует редактирования" },
+    "готова":                 { p: "info",  t: "Готова" },
+    "выгружена":              { p: "ok",    t: "Выгружена" },
+    "ошибка выгрузки":        { p: "bad",   t: "Ошибка выгрузки" },
+    "не для склада":          { p: "muted", t: "Не для склада" },
+    "дубль":                  { p: "muted", t: "Дубль" }
+  };
+  var TABS = [
+    ["all", "Все", null],
+    ["edit", "Требуют редактирования", ["требует редактирования", "не распознана", "распознаётся"]],
+    ["ready", "Готовы", ["готова"]],
+    ["err", "Ошибки выгрузки", ["ошибка выгрузки"]],
+    ["done", "Выгружены", ["выгружена"]],
+    ["skip", "Не для склада", ["не для склада", "дубль"]]
+  ];
+
+  function $(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function money(v) {
+    return (Number(v) || 0).toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
+  }
+  function qty(v) {
+    return (Number(v) || 0).toLocaleString("es-ES", { maximumFractionDigits: 3 });
+  }
+  function toast(t) {
+    var el = $("toast"); el.textContent = t; el.classList.add("show");
+    clearTimeout(toast._t); toast._t = setTimeout(function () { el.classList.remove("show"); }, 3500);
+  }
+  function hdrs(json) {
+    var h = {};
+    if (tg && tg.initData) h["X-TG-Init-Data"] = tg.initData;
+    if (json) h["Content-Type"] = "application/json";
+    return h;
+  }
+  function api(path, body) {
+    var opt = { headers: hdrs(!!body), credentials: "same-origin" };
+    if (body) { opt.method = "POST"; opt.body = JSON.stringify(body); }
+    return fetch(path, opt).then(function (r) {
+      if (r.status === 401) throw new Error("auth");
+      return r.json().then(function (j) {
+        if (!r.ok) throw new Error(j.error || ("http " + r.status));
+        return j;
+      });
+    });
+  }
+  function locName(code) {
+    var l = S.locales.filter(function (x) { return x.code === code; })[0];
+    return l ? (l.emoji + " " + l.name) : code;
+  }
+  function locSyrve() {
+    var l = S.locales.filter(function (x) { return x.code === S.loc; })[0];
+    return !!(l && l.syrve);
+  }
+  function storeName(id) {
+    var st = (S.ref.stores || []).filter(function (s) { return s.id === id; })[0];
+    return st ? st.name : "";
+  }
+
+  /* ---------- список ---------- */
+  function monthOf(r) {
+    var p = (r.fecha_doc || r.fecha || "").split(".");
+    return p.length === 3 ? p[2] + "-" + p[1] : "";
+  }
+  var MONTHS = ["", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
+  function monthLabel(m) { var p = m.split("-"); return MONTHS[+p[1]] + " " + p[0]; }
+
+  function inTab(r, tab) {
+    var def = TABS.filter(function (t) { return t[0] === tab; })[0];
+    return !def || !def[2] || def[2].indexOf(r.estado) >= 0;
+  }
+  function filtered() {
+    var q = S.q.trim().toLowerCase();
+    return S.rows.filter(function (r) {
+      if (S.month && monthOf(r) !== S.month) return false;
+      if (q && (r.numero + " " + r.proveedor + " " + r.nif + " " + r.id).toLowerCase().indexOf(q) < 0) return false;
+      return true;
+    });
+  }
+
+  function renderTabs() {
+    var base = filtered();
+    $("tabs").innerHTML = TABS.map(function (t) {
+      var n = base.filter(function (r) { return inTab(r, t[0]); }).length;
+      return '<button class="chip" type="button" data-tab="' + t[0] + '" aria-pressed="' + (S.tab === t[0]) + '">' +
+        esc(t[1]) + ' · <b>' + n + '</b></button>';
+    }).join("");
+    Array.prototype.forEach.call($("tabs").querySelectorAll(".chip"), function (b) {
+      b.onclick = function () { S.tab = b.dataset.tab; renderList(); };
+    });
+    var ready = base.filter(function (r) { return r.estado === "готова"; }).length;
+    var up = $("upAll");
+    up.hidden = !locSyrve();
+    up.disabled = !ready;
+    up.textContent = "Выгрузить в Syrve · " + ready;
+  }
+
+  function renderMonths() {
+    var ms = {};
+    S.rows.forEach(function (r) { var m = monthOf(r); if (m) ms[m] = 1; });
+    var keys = Object.keys(ms).sort().reverse();
+    if (S.month && !ms[S.month]) S.month = "";
+    $("month").innerHTML = '<option value="">Все месяцы</option>' + keys.map(function (m) {
+      return '<option value="' + m + '"' + (S.month === m ? " selected" : "") + ">" + monthLabel(m) + "</option>";
+    }).join("");
+  }
+
+  function renderNotes() {
+    var html = "";
+    if (!locSyrve()) {
+      html += '<div class="note warn">Syrve для ' + esc(locName(S.loc)) + ' ещё не подключён: накладные читаются и сопоставлять ' +
+        'можно, выгрузка включится после подключения.</div>';
+    } else if (window.__meta) {
+      html += '<div class="note">' + (window.__meta.auto ? "Готовые накладные уходят в Syrve сами" : "Выгрузка в Syrve — кнопкой") +
+        (window.__meta.draft ? ", черновиком: проведите их в Syrve после проверки." : ", сразу проведёнными.") + "</div>";
+    }
+    $("notes").innerHTML = html;
+  }
+
+  function rowHtml(r) {
+    var st = ST[r.estado] || { p: "muted", t: r.estado };
+    var cls = r.estado === "выгружена" ? "done" :
+      (st.p === "bad" ? "bad" : (st.p === "warn" ? "attention" : ""));
+    var flag = r.base ? (r.sum_ok ? '<span class="flag ok" title="Сумма строк сходится">✓</span>'
+      : '<span class="flag bad" title="Сумма строк не сходится с базой">!</span>') : "";
+    var stores = (r.stores || []).map(storeName).filter(Boolean).join(", ");
+    var match = r.n ? '<span class="match' + (r.m >= r.n ? " full" : "") + '">' + r.m + " из " + r.n + "</span>" : '<span class="meta">—</span>';
+    return '<button type="button" class="row ' + cls + '" data-id="' + esc(r.id) + '">' +
+      '<div><div class="num">' + esc(r.numero || "без номера") + '</div><div class="meta">' + esc(r.proveedor || "поставщик не распознан") + "</div></div>" +
+      '<div class="c-date"><div>' + esc(r.fecha_doc || r.fecha) + '</div><div class="meta">загружено ' + esc(r.fecha) + "</div></div>" +
+      '<div class="c-store meta">' + esc(stores) + "</div>" +
+      '<div class="c-sum"><div class="sum">' + money(r.base || r.lsum) + flag + '</div><div class="meta" style="text-align:right">с IVA ' + money(r.total) + "</div></div>" +
+      '<div class="c-st"><div>' + match + '</div><div style="margin-top:4px"><span class="pill ' + st.p + '">' + esc(st.t) + "</span></div></div>" +
+      "</button>";
+  }
+
+  function renderList() {
+    renderTabs();
+    renderNotes();
+    var rows = filtered().filter(function (r) { return inTab(r, S.tab); });
+    $("list").innerHTML = rows.length ? rows.map(rowHtml).join("") :
+      '<div class="empty">Здесь пусто. Фактуры появляются сами, когда их отправляют в группу Facturas локали.</div>';
+    Array.prototype.forEach.call($("list").querySelectorAll(".row"), function (b) {
+      b.onclick = function () { openDoc(b.dataset.id); };
+    });
+  }
+
+  function renderLocs() {
+    if (!S.loc || !S.locales.some(function (l) { return l.code === S.loc; })) {
+      var withSyrve = S.locales.filter(function (l) { return l.syrve; })[0];
+      S.loc = (withSyrve || S.locales[0] || {}).code || "";
+    }
+    $("loc").innerHTML = S.locales.map(function (l) {
+      return '<option value="' + l.code + '"' + (l.code === S.loc ? " selected" : "") + ">" +
+        esc(l.emoji + " " + l.name) + (l.syrve ? "" : " · без Syrve") + "</option>";
+    }).join("");
+  }
+
+  function load(force) {
+    $("loading").hidden = false;
+    return api("/almacen/api/data?loc=" + encodeURIComponent(S.loc) + (force ? "&force=1" : "")).then(function (d) {
+      S.rows = d.rows || []; S.locales = d.locales || []; S.viewer = d.viewer || {};
+      window.__meta = { auto: d.auto, draft: d.draft };
+      var before = S.loc;
+      renderLocs();
+      if (before !== S.loc) return load(force);
+      $("who").textContent = (S.viewer.name ? S.viewer.name + " · " : "") + "Sumskaya Line";
+      $("foot").textContent = "Обновлено " + (d.updated || "") + ". Данные — из таблицы бота и Syrve.";
+      $("loading").hidden = true;
+      renderMonths();
+      renderList();
+      loadRef();
+    }).catch(fail);
+  }
+
+  function loadRef() {
+    if (!locSyrve()) { S.ref = {}; return Promise.resolve(); }
+    if (S.ref.loc === S.loc) return Promise.resolve();
+    return api("/almacen/api/ref?loc=" + encodeURIComponent(S.loc)).then(function (r) {
+      r.loc = S.loc; S.ref = r;
+      S.ref.pById = {}; (r.products || []).forEach(function (p) { S.ref.pById[p.id] = p; });
+      renderList();
+    }).catch(function (e) { toast("Syrve не ответил: " + e.message); });
+  }
+
+  function fail(e) {
+    $("loading").hidden = true;
+    $("list").innerHTML = e && e.message === "auth"
+      ? '<div class="error">Ссылка устарела. Откройте страницу заново из бота: 📦 Склад → Ritmo OPS или /almacen.</div>'
+      : '<div class="error">Не получилось загрузить: ' + esc(e && e.message) + "</div>";
+  }
+
+  /* ---------- комбобокс ---------- */
+  function combo(el, items, value, label, onPick, fmt) {
+    el.classList.add("combo");
+    el.innerHTML = '<input type="text" autocomplete="off" placeholder="Начните вводить…"><ul role="listbox" hidden></ul>';
+    var inp = el.querySelector("input"), ul = el.querySelector("ul"), cur = [], act = -1;
+    inp.value = label || ""; if (value) el.classList.add("set");
+    function show() {
+      var q = inp.value.trim().toLowerCase(), words = q.split(/\s+/).filter(Boolean);
+      cur = items.filter(function (it) {
+        var s = (it.name + " " + (it.num || "") + " " + (it.nif || "")).toLowerCase();
+        return words.every(function (w) { return s.indexOf(w) >= 0; });
+      }).slice(0, 40);
+      act = -1;
+      ul.innerHTML = cur.length ? cur.map(function (it, i) {
+        return '<li role="option" data-i="' + i + '">' + esc(it.name) + (fmt ? " <small>" + esc(fmt(it)) + "</small>" : "") + "</li>";
+      }).join("") : '<li aria-disabled="true"><small>Не нашлось</small></li>';
+      ul.hidden = false;
+    }
+    function pick(i) {
+      var it = cur[i]; if (!it) return;
+      inp.value = it.name; ul.hidden = true; el.classList.add("set"); onPick(it);
+    }
+    inp.addEventListener("focus", function () { inp.select(); show(); });
+    inp.addEventListener("input", function () { el.classList.remove("set"); show(); });
+    inp.addEventListener("keydown", function (ev) {
+      var lis = ul.querySelectorAll("li[data-i]");
+      if (ev.key === "ArrowDown") { act = Math.min(act + 1, lis.length - 1); ev.preventDefault(); }
+      else if (ev.key === "ArrowUp") { act = Math.max(act - 1, 0); ev.preventDefault(); }
+      else if (ev.key === "Enter") { if (act >= 0) pick(act); else if (cur.length === 1) pick(0); ev.preventDefault(); return; }
+      else if (ev.key === "Escape") { ul.hidden = true; return; }
+      else return;
+      Array.prototype.forEach.call(lis, function (li, i) { li.setAttribute("aria-selected", i === act); });
+    });
+    ul.addEventListener("mousedown", function (ev) {
+      var li = ev.target.closest("li[data-i]"); if (li) { ev.preventDefault(); pick(+li.dataset.i); }
+    });
+    inp.addEventListener("blur", function () { setTimeout(function () { ul.hidden = true; }, 120); });
+  }
+
+  /* ---------- карточка: редактор накладной ---------- */
+  var V = { page: 0, zoom: 1, rot: 0 };
+
+  function openDoc(id) {
+    $("sheet").classList.add("open");
+    document.body.style.overflow = "hidden";
+    $("dLines").querySelector("tbody").innerHTML = '<tr><td colspan="12"><div class="meta">Загружаю…</div></td></tr>';
+    $("dNotes").innerHTML = ""; $("dFoot").innerHTML = ""; $("dDocline").innerHTML = "";
+    loadRef().then(function () { return api("/almacen/api/doc/" + encodeURIComponent(id)); }).then(function (d) {
+      S.doc = d; S.edits = {}; S.head = {}; S.added = 0;
+      V = { page: 0, zoom: 1, rot: 0 };
+      if (window.innerWidth <= 1000) $("viewer").classList.add("hidden"); else $("viewer").classList.remove("hidden");
+      renderViewer();
+      renderDoc();
+    }).catch(function (e) { toast("Не открылась: " + e.message); closeDoc(); });
+  }
+  function closeDoc() {
+    $("sheet").classList.remove("open");
+    document.body.style.overflow = "";
+    S.doc = null;
+  }
+
+  /* просмотр документа */
+  function renderViewer() {
+    var d = S.doc, n = d.files || 0, pane = $("vPane");
+    if (!n) { pane.innerHTML = '<div class="meta">Файла нет</div>'; return; }
+    V.page = Math.max(0, Math.min(V.page, n - 1));
+    var url = "/almacen/file/" + encodeURIComponent(d.id) + "?i=" + V.page;
+    var type = (d.ftypes || [])[V.page] || "";
+    $("vPage").textContent = (V.page + 1) + " / " + n;
+    $("vPrev").disabled = V.page === 0; $("vNext").disabled = V.page >= n - 1;
+    $("vZoom").textContent = Math.round(V.zoom * 100) + "%";
+    $("vOpen").href = url;
+    if (type.indexOf("pdf") >= 0) {
+      pane.innerHTML = '<iframe src="' + url + '" title="Документ"></iframe>';
+    } else {
+      pane.innerHTML = '<img alt="Документ, страница ' + (V.page + 1) + '" src="' + url + '">';
+      pane.querySelector("img").style.transform = "scale(" + V.zoom + ") rotate(" + V.rot + "deg)";
+    }
+  }
+  function viewerZoom() {
+    var img = $("vPane").querySelector("img");
+    if (img) img.style.transform = "scale(" + V.zoom + ") rotate(" + V.rot + "deg)";
+    $("vZoom").textContent = Math.round(V.zoom * 100) + "%";
+  }
+
+  /* строка = распознанное + правки */
+  var LKEYS = ["pid", "pname", "coef", "skip", "store", "qty", "sum", "vat", "name", "unit"];
+  function lineState(l) {
+    var e = S.edits[l.n] || {}, out = {};
+    LKEYS.forEach(function (k) { out[k] = (k in e) ? e[k] : l[k]; });
+    out.coef = Number(out.coef) || 1;
+    out.qty = Number(out.qty) || 0;
+    out.sum = Number(out.sum) || 0;
+    return out;
+  }
+  function allLines() { return S.doc.lines || []; }
+  function totals() {
+    var base = 0, iva = 0;
+    allLines().forEach(function (l) {
+      var s = lineState(l);
+      base += s.sum; iva += s.sum * (Number(s.vat) || 0) / 100;
+    });
+    return { base: base, iva: iva, total: base + iva };
+  }
+  function storeOptions(cur, withDefault) {
+    return (withDefault ? '<option value="">как в шапке</option>' : '<option value="">— выберите —</option>') +
+      (S.ref.stores || []).map(function (s) {
+        return '<option value="' + esc(s.id) + '"' + (cur === s.id ? " selected" : "") + ">" + esc(s.name) + "</option>";
+      }).join("");
+  }
+  function isoDate(dmy) { var p = String(dmy || "").split("."); return p.length === 3 ? p[2] + "-" + p[1] + "-" + p[0] : ""; }
+  function dmyDate(iso) { var p = String(iso || "").split("-"); return p.length === 3 ? p[2] + "." + p[1] + "." + p[0] : ""; }
+
+  function problems() {
+    var d = S.doc, out = [];
+    if (d.error) out.push(d.error);
+    var left = unmatchedLeft();
+    if (left) out.push("не выбран товар Syrve в строках: " + left);
+    if (locSyrve()) {
+      if (!(S.head.supplier || d.supplier)) out.push("не выбран поставщик Syrve");
+      var ds = ("store" in S.head) ? S.head.store : (d.store || S.ref.default_store || "");
+      var noStore = allLines().some(function (l) { var s = lineState(l); return !s.skip && !s.store; });
+      if (!ds && noStore) out.push("не выбран склад");
+    }
+    var t = totals(), base = Number(("base" in S.head) ? String(S.head.base).replace(",", ".") : d.base) || 0;
+    if (base && Math.abs(t.base - base) > Math.max(0.05, base * 0.005))
+      out.push("сумма строк " + money(t.base) + " не сходится с документом " + money(base) + " — сама в Syrve не уйдёт, только кнопкой");
+    allLines().forEach(function (l) {
+      var s = lineState(l);
+      if (!s.skip && s.pid && !(s.qty > 0)) out.push("строка " + l.n + ": нулевое количество");
+    });
+    return out;
+  }
+
+  function renderDoc() {
+    var d = S.doc, st = ST[d.estado] || { p: "muted", t: d.estado };
+    var locked = d.estado === "выгружена", syrve = locSyrve();
+    $("dTitle").textContent = (d.numero || "Без номера") + " · " + (d.proveedor || "");
+    $("dPill").innerHTML = '<span class="pill ' + st.p + '">' + esc(st.t) + "</span>";
+    $("dSub").textContent = locName(d.loc) + " · " + (d.autor || "—") + " · " + d.fecha +
+      (d.syrve_num ? " · Syrve № " + d.syrve_num : "");
+
+    // шапка
+    var num = $("h_numero"), fe = $("h_fecha");
+    num.value = ("numero" in S.head) ? S.head.numero : (d.numero || "");
+    fe.value = isoDate(("fecha" in S.head) ? S.head.fecha : d.fecha_doc);
+    num.disabled = fe.disabled = locked;
+    num.onchange = function () { S.head.numero = num.value; };
+    fe.onchange = function () { S.head.fecha = dmyDate(fe.value); };
+    $("hfSup").hidden = $("hfStore").hidden = !syrve;
+    if (syrve) {
+      var sups = S.ref.suppliers || [];
+      var cs = sups.filter(function (s) { return s.id === (S.head.supplier || d.supplier); })[0];
+      combo($("supCombo"), sups, cs && cs.id, cs && cs.name, function (it) {
+        S.head.supplier = it.id; S.head.supplier_name = it.name; renderFoot();
+      }, function (s) { return s.nif || ""; });
+      if (locked) $("supCombo").querySelector("input").disabled = true;
+      var curStore = ("store" in S.head) ? S.head.store : (d.store || S.ref.default_store || "");
+      $("dStore").innerHTML = storeOptions(curStore, false);
+      $("dStore").disabled = locked;
+      $("dStore").onchange = function () { S.head.store = this.value; renderDoc(); };
+    }
+
+    // поставщик как в документе
+    $("dDocline").innerHTML =
+      '<div class="hf"><label for="h_proveedor">Поставщик в документе</label><input id="h_proveedor" data-h="proveedor" value="' + esc(("proveedor" in S.head) ? S.head.proveedor : d.proveedor) + '"' + (locked ? " disabled" : "") + "></div>" +
+      '<div class="hf"><label for="h_nif">NIF</label><input id="h_nif" class="nif" data-h="nif" value="' + esc(("nif" in S.head) ? S.head.nif : d.nif) + '"' + (locked ? " disabled" : "") + "></div>" +
+      '<div class="hf"><label for="h_base">База в документе</label><input id="h_base" class="nif" data-h="base" value="' + esc(("base" in S.head) ? S.head.base : (d.base || "")) + '"' + (locked ? " disabled" : "") + "></div>" +
+      '<button type="button" class="btn showdoc" id="showDoc">Показать документ</button>';
+    Array.prototype.forEach.call($("dDocline").querySelectorAll("input[data-h]"), function (i) {
+      i.onchange = function () { S.head[i.dataset.h] = i.value; renderFoot(); };
+    });
+    $("showDoc").onclick = function () { $("viewer").classList.remove("hidden"); renderViewer(); };
+
+    // строки
+    var defStore = ("store" in S.head) ? S.head.store : (d.store || S.ref.default_store || "");
+    var tb = $("dLines").querySelector("tbody");
+    var dis = locked ? " disabled" : "";
+    tb.innerHTML = allLines().map(function (l, idx) {
+      var s = lineState(l);
+      var cls = s.skip ? "skipped" : (s.pid ? "" : "unmatched");
+      var p = S.ref.pById && s.pid ? S.ref.pById[s.pid] : null;
+      var bunit = p ? p.unit : "";
+      var base = s.qty * s.coef;
+      var price = s.qty ? s.sum / s.qty : 0;
+      var withVat = s.sum * (1 + (Number(s.vat) || 0) / 100);
+      var sug = (!s.pid && !s.skip && l.sug && syrve && !locked) ?
+        '<div class="sug">Похоже на: <button type="button" data-sug="' + l.n + '">' + esc(l.sug.pname) + "</button></div>" : "";
+      var name = l.isnew ? '<div class="lname"><input data-f="name" data-n="' + l.n + '" value="' + esc(s.name || "") + '" placeholder="Описание"></div>'
+        : '<div class="lname">' + esc(l.name) + "</div>" + (l.code ? '<div class="code">' + esc(l.code) + "</div>" : "") +
+          (l.how ? '<div class="how">' + esc(l.how) + "</div>" : "");
+      return '<tr class="' + cls + '" data-n="' + l.n + '">' +
+        '<td class="meta hide-m">' + (idx + 1) + "</td>" +
+        "<td>" + name + "</td>" +
+        '<td class="pcell">' + (syrve ? '<div class="pc" data-n="' + l.n + '"></div>' : '<span class="meta">Syrve не подключён</span>') + sug +
+          '<label class="skipbox"><input type="checkbox" data-skip="' + l.n + '"' + (s.skip ? " checked" : "") + dis + "> не приходовать</label></td>" +
+        '<td class="r" data-l="В упаковке"><input class="cell-in" type="number" step="any" min="0" data-f="coef" data-n="' + l.n + '" value="' + s.coef + '"' + dis + '><div class="unit">' + esc(bunit || "ед. Syrve") + "</div></td>" +
+        '<td class="r" data-l="Упаковок"><input class="cell-in" type="number" step="any" min="0" data-f="qty" data-n="' + l.n + '" value="' + s.qty + '"' + dis + '><div class="unit">' + esc(s.unit || "") + "</div></td>" +
+        '<td class="r" data-l="Базовое кол-во"><b>' + qty(base) + '</b><div class="unit">' + esc(bunit) + "</div></td>" +
+        '<td data-l="Склад">' + (syrve ? '<select class="lstore" data-f="store" data-n="' + l.n + '"' + dis + ">" +
+          storeOptions(s.store || "", true).replace('<option value="">как в шапке</option>',
+            '<option value="">' + esc(storeName(defStore) || "как в шапке") + "</option>") + "</select>" : "") + "</td>" +
+        '<td class="r hide-m">' + price.toLocaleString("es-ES", { maximumFractionDigits: 4 }) + "</td>" +
+        '<td class="r" data-l="IVA %"><input class="cell-in pct" type="number" step="any" min="0" data-f="vat" data-n="' + l.n + '" value="' + (s.vat == null ? "" : s.vat) + '"' + dis + "> %</td>" +
+        '<td class="r" data-l="Сумма без IVA"><input class="cell-in money" type="number" step="0.01" data-f="sum" data-n="' + l.n + '" value="' + s.sum.toFixed(2) + '"' + dis + "></td>" +
+        '<td class="r hide-m">' + withVat.toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "</td>" +
+        "<td>" + (l.isnew && !locked ? '<button type="button" class="rm" data-rm="' + l.n + '" aria-label="Убрать строку">×</button>' : "") + "</td></tr>";
+    }).join("") || '<tr><td colspan="12"><div class="meta">Строки не распознаны. Нажмите «Прочитать заново» или добавьте строки вручную.</div></td></tr>';
+    $("addRow").hidden = locked;
+
+    if (syrve) {
+      Array.prototype.forEach.call(tb.querySelectorAll(".pc"), function (el) {
+        var n = +el.dataset.n, l = allLines().filter(function (x) { return x.n === n; })[0], s = lineState(l);
+        combo(el, S.ref.products || [], s.pid, s.pname, function (it) {
+          setEdit(n, { pid: it.id, pname: it.name, skip: false });
+        }, function (p) { return [p.unit, p.num].filter(Boolean).join(" · "); });
+        if (locked) el.querySelector("input").disabled = true;
+      });
+    }
+    Array.prototype.forEach.call(tb.querySelectorAll("[data-sug]"), function (b) {
+      b.onclick = function () {
+        var n = +b.dataset.sug, l = allLines().filter(function (x) { return x.n === n; })[0];
+        setEdit(n, { pid: l.sug.pid, pname: l.sug.pname, skip: false });
+      };
+    });
+    Array.prototype.forEach.call(tb.querySelectorAll("[data-skip]"), function (c) {
+      c.onchange = function () { setEdit(+c.dataset.skip, { skip: c.checked }); };
+    });
+    Array.prototype.forEach.call(tb.querySelectorAll("[data-f]"), function (c) {
+      c.onchange = function () {
+        var f = c.dataset.f, v = c.value, ch = {};
+        if (f === "coef") ch.coef = parseFloat(v) || 1;
+        else if (f === "qty" || f === "sum") ch[f] = parseFloat(v) || 0;
+        else if (f === "vat") ch.vat = v === "" ? null : (parseFloat(v) || 0);
+        else ch[f] = v;
+        setEdit(+c.dataset.n, ch);
+      };
+    });
+    Array.prototype.forEach.call(tb.querySelectorAll("[data-rm]"), function (b) {
+      b.onclick = function () {
+        var n = +b.dataset.rm;
+        S.doc.lines = allLines().filter(function (x) { return x.n !== n; });
+        delete S.edits[n];
+        renderDoc();
+      };
+    });
+    renderNotes2();
+    renderFoot();
+  }
+
+  function renderNotes2() {
+    var pr = problems(), d = S.doc;
+    $("dNotes").innerHTML = (d.estado !== "выгружена" && pr.length)
+      ? '<div class="note warn" id="probs"><b>Чтобы выгрузить в Syrve:</b><br>' + pr.map(esc).join("<br>") + "</div>" : "";
+  }
+
+  function renderFoot() {
+    var d = S.doc, a = [], t = totals(), locked = d.estado === "выгружена";
+    var base = Number(("base" in S.head) ? String(S.head.base).replace(",", ".") : d.base) || 0;
+    var bad = base && Math.abs(t.base - base) > Math.max(0.05, base * 0.005);
+    a.push('<div class="left">');
+    if (locked) {
+      a.push('<span class="check">Выгружена в Syrve ' + esc(d.uploaded) + ". Правки — в самом Syrve.</span>");
+    } else {
+      a.push('<label class="check"><input type="checkbox" id="remember"' + (S.remember === false ? "" : " checked") + "> Запомнить товары для этого поставщика</label>");
+      a.push('<button class="linkbtn" type="button" data-act="reread">Прочитать заново</button>');
+      if (d.estado === "не для склада" || d.estado === "дубль") a.push('<button class="linkbtn" type="button" data-act="restore">Вернуть в работу</button>');
+      else a.push('<button class="linkbtn" type="button" data-act="ignore">Поставщик не для склада</button>');
+      a.push('<button class="linkbtn danger" type="button" data-act="del">Удалить</button>');
+    }
+    a.push("</div>");
+    a.push('<div class="tot"><div><label>Сумма без IVA</label><b>' + money(t.base) + "</b>" +
+      (base ? '<div class="doc' + (bad ? " bad" : "") + '">в документе ' + money(base) + "</div>" : "") + "</div>" +
+      "<div><label>IVA</label><b>" + money(t.iva) + "</b></div>" +
+      '<div class="grand"><label>Итого</label><b>' + money(t.total) + "</b>" +
+      (d.total ? '<div class="doc">в документе ' + money(d.total) + "</div>" : "") + "</div></div>");
+    if (!locked) {
+      var pr = problems();
+      a.push('<button type="button" class="warnbadge' + (pr.length ? "" : " ok") + '" id="warnBtn" title="' + esc(pr.join("\n") || "Всё в порядке") + '" aria-label="Замечаний: ' + pr.length + '">' +
+        (pr.length ? "!" + "<span>" + pr.length + "</span>" : "✓") + "</button>");
+      a.push('<button class="btn" type="button" data-act="save">Сохранить</button>');
+      if (locSyrve()) a.push('<button class="btn primary" type="button" data-act="saveup"' + (unmatchedLeft() ? " disabled" : "") + ">Выгрузить в Syrve</button>");
+    }
+    $("dFoot").innerHTML = a.join("");
+    Array.prototype.forEach.call($("dFoot").querySelectorAll("[data-act]"), function (b) {
+      b.onclick = function () { act(b.dataset.act, b); };
+    });
+    var rem = $("remember"); if (rem) rem.onchange = function () { S.remember = rem.checked; };
+    var wb = $("warnBtn"); if (wb) wb.onclick = function () {
+      var n = $("probs"); if (n) n.scrollIntoView({ behavior: "smooth", block: "center" }); else toast("Замечаний нет");
+    };
+  }
+
+  function setEdit(n, ch) {
+    S.edits[n] = Object.assign(S.edits[n] || {}, ch);
+    // перерисовываем после текущего события: иначе change от поля, которое
+    // теряет фокус при перерисовке, запускает вторую перерисовку внутри первой
+    clearTimeout(setEdit._t);
+    setEdit._t = setTimeout(function () { if (S.doc) renderDoc(); }, 0);
+  }
+
+  function unmatchedLeft() {
+    return allLines().filter(function (l) { var s = lineState(l); return !s.pid && !s.skip; }).length;
+  }
+
+  function addRow() {
+    var max = allLines().reduce(function (m, l) { return Math.max(m, l.n); }, 0);
+    var n = max + 1, vat = (allLines()[0] || {}).vat;
+    S.doc.lines = allLines().concat([{ n: n, name: "", qty: 1, unit: "", sum: 0, vat: vat == null ? 10 : vat, coef: 1, isnew: true }]);
+    S.edits[n] = { isnew: true, name: "", qty: 1, sum: 0, vat: vat == null ? 10 : vat };
+    renderDoc();
+    var inp = $("dLines").querySelector('tr[data-n="' + n + '"] input[data-f=name]'); if (inp) inp.focus();
+  }
+
+  function payload(extra) {
+    var p = { lines: [], remember: S.remember !== false, header: {} };
+    Object.keys(S.edits).forEach(function (n) {
+      var e = Object.assign({ n: +n }, S.edits[n]);
+      if (e.isnew) { e["new"] = true; delete e.isnew; }
+      p.lines.push(e);
+    });
+    ["proveedor", "nif", "numero", "fecha", "base"].forEach(function (k) { if (k in S.head) p.header[k] = S.head[k]; });
+    if ("supplier" in S.head) { p.supplier = S.head.supplier; p.supplier_name = S.head.supplier_name; }
+    if ("store" in S.head) p.store = S.head.store;
+    else if (locSyrve() && !S.doc.store && S.ref.default_store) p.store = S.ref.default_store;
+    return Object.assign(p, extra || {});
+  }
+
+  function busy(b, on) { if (b) { b.disabled = on; if (on) b.dataset.t = b.textContent, b.textContent = "…"; else if (b.dataset.t) b.textContent = b.dataset.t; } }
+
+  function act(kind, b) {
+    var id = S.doc.id, p;
+    if (kind === "del" && !confirm("Удалить накладную из списка? В Syrve ничего не изменится.")) return;
+    if (kind === "ignore" && !confirm("Все документы поставщика «" + (S.doc.proveedor || "") + "» будут отмечаться «не для склада». Продолжить?")) return;
+    busy(b, true);
+    if (kind === "save" || kind === "saveup") p = api("/almacen/api/doc/" + encodeURIComponent(id) + "/save", payload({ upload: kind === "saveup" }));
+    else if (kind === "ignore") p = api("/almacen/api/doc/" + encodeURIComponent(id) + "/save", payload({ ignore_supplier: true }));
+    else if (kind === "reread") p = api("/almacen/api/doc/" + encodeURIComponent(id) + "/reread", {});
+    else if (kind === "del" || kind === "restore") p = api("/almacen/api/doc/" + encodeURIComponent(id) + "/status", { status: kind });
+    p.then(function (r) {
+      busy(b, false);
+      if (!r.ok) { toast(r.error || "Не получилось"); return; }
+      if (r.upload) toast(r.upload.ok ? "Выгружено в Syrve · № " + (r.upload.number || "") : "Syrve не принял: " + r.upload.error);
+      else if (kind === "reread") toast("Читаю заново — обновите список через минуту");
+      else if (kind === "del") toast("Удалено");
+      else toast("Сохранено · " + (r.status || "") + (r.need && r.need.length ? " — " + r.need.join("; ") : ""));
+      if (kind === "del" || kind === "reread") { closeDoc(); load(true); return; }
+      api("/almacen/api/doc/" + encodeURIComponent(id)).then(function (d) { S.doc = d; S.edits = {}; S.head = {}; renderDoc(); });
+      load(true);
+    }).catch(function (e) { busy(b, false); toast(e.message); });
+  }
+
+  $("addRow").onclick = addRow;
+  $("vHide").onclick = function () { $("viewer").classList.add("hidden"); };
+  $("vPrev").onclick = function () { V.page--; renderViewer(); };
+  $("vNext").onclick = function () { V.page++; renderViewer(); };
+  $("vIn").onclick = function () { V.zoom = Math.min(4, V.zoom + 0.25); viewerZoom(); };
+  $("vOut").onclick = function () { V.zoom = Math.max(0.5, V.zoom - 0.25); viewerZoom(); };
+  $("vRot").onclick = function () { V.rot = (V.rot + 90) % 360; viewerZoom(); };
+
+  /* ---------- цены ---------- */
+  function loadPrices() {
+    $("prices").innerHTML = '<div class="empty">Считаю цены…</div>';
+    api("/almacen/api/prices?loc=" + encodeURIComponent(S.loc)).then(function (d) { S.prices = d.rows || []; renderPrices(); })
+      .catch(function (e) { $("prices").innerHTML = '<div class="error">' + esc(e.message) + "</div>"; });
+  }
+  function spark(h) {
+    var max = Math.max.apply(null, h.map(function (x) { return x.p; })) || 1;
+    return '<span class="spark" aria-hidden="true">' + h.map(function (x) {
+      return '<i style="height:' + Math.max(3, Math.round(x.p / max * 18)) + 'px"></i>';
+    }).join("") + "</span>";
+  }
+  function renderPrices() {
+    var q = $("pq").value.trim().toLowerCase(), only = $("pf").value === "changed";
+    var rows = (S.prices || []).filter(function (r) {
+      if (only && !r.prev) return false;
+      return !q || (r.name + " " + r.pname + " " + r.supplier).toLowerCase().indexOf(q) >= 0;
+    });
+    if (!rows.length) { $("prices").innerHTML = '<div class="empty">' + (only ? "Изменений цен пока нет." : "Цен пока нет.") + "</div>"; return; }
+    $("prices").innerHTML = '<table class="plain"><thead><tr><th>Товар</th><th class="hide-m">Поставщик</th><th class="r">Было</th><th class="r">Стало</th><th class="r">Изм.</th><th class="hide-m">Динамика</th></tr></thead><tbody>' +
+      rows.slice(0, 400).map(function (r) {
+        var c = r.change > 0 ? '<span class="up">+' + r.change + "%</span>" : (r.change < 0 ? '<span class="down">' + r.change + "%</span>" : "—");
+        return "<tr><td><b>" + esc(r.name) + "</b>" + (r.pname ? '<div class="meta">' + esc(r.pname) + "</div>" : "") + "</td>" +
+          '<td class="hide-m">' + esc(r.supplier) + "</td>" +
+          '<td class="r">' + (r.prev != null ? money(r.prev) + '<div class="meta">' + esc(r.prev_date) + "</div>" : "—") + "</td>" +
+          '<td class="r">' + money(r.price) + '<div class="meta">' + esc(r.date) + (r.unit ? " · за " + esc(r.unit) : "") + "</div></td>" +
+          '<td class="r">' + c + "</td><td class=\"hide-m\">" + spark(r.history) + "</td></tr>";
+      }).join("") + "</tbody></table>";
+  }
+
+  /* ---------- остатки ---------- */
+  function loadStock() {
+    if (!locSyrve()) { $("stock").innerHTML = '<div class="empty">Остатки берутся из Syrve — для этой локали он ещё не подключён.</div>'; return; }
+    $("stock").innerHTML = '<div class="empty">Запрашиваю остатки в Syrve…</div>';
+    api("/almacen/api/balances?loc=" + encodeURIComponent(S.loc)).then(function (d) {
+      S.stock = d;
+      var stores = {}; (d.rows || []).forEach(function (r) { stores[r.store] = 1; });
+      $("ss").innerHTML = '<option value="">Все склады</option>' + Object.keys(stores).sort().map(function (s) { return '<option>' + esc(s) + "</option>"; }).join("");
+      renderStock();
+    }).catch(function (e) { $("stock").innerHTML = '<div class="error">Syrve не отдал остатки: ' + esc(e.message) + "</div>"; });
+  }
+  function renderStock() {
+    var d = S.stock || {}, q = $("sq").value.trim().toLowerCase(), s = $("ss").value;
+    var rows = (d.rows || []).filter(function (r) {
+      return (!s || r.store === s) && (!q || r.product.toLowerCase().indexOf(q) >= 0);
+    });
+    var total = rows.reduce(function (a, r) { return a + r.sum; }, 0);
+    $("stock").innerHTML = '<div class="note">На ' + esc(d.at || "") + " · позиций " + rows.length + " · на сумму " + money(total) + "</div>" +
+      (rows.length ? '<table class="plain"><thead><tr><th>Товар</th><th class="hide-m">Склад</th><th class="r">Остаток</th><th class="r">Сумма</th></tr></thead><tbody>' +
+      rows.slice(0, 1500).map(function (r) {
+        return "<tr><td>" + esc(r.product) + "</td><td class=\"hide-m\">" + esc(r.store) + '</td><td class="r' + (r.amount < 0 ? " up" : "") + '">' + qty(r.amount) + " " + esc(r.unit) + '</td><td class="r">' + money(r.sum) + "</td></tr>";
+      }).join("") + "</tbody></table>" : '<div class="empty">Ничего не нашлось.</div>');
+  }
+
+  /* ---------- события ---------- */
+  $("loc").onchange = function () {
+    S.loc = this.value; S.ref = {}; S.prices = null; S.stock = null;
+    try { localStorage.setItem("stk_loc", S.loc); } catch (e) {}
+    load(false).then(function () { if (S.view === "prices") loadPrices(); if (S.view === "stock") loadStock(); });
+  };
+  $("refresh").onclick = function () {
+    load(true);
+    if (S.view === "prices") loadPrices();
+    if (S.view === "stock") loadStock();
+  };
+  $("q").oninput = function () { S.q = this.value; renderList(); };
+  $("month").onchange = function () { S.month = this.value; renderList(); };
+  $("pq").oninput = renderPrices; $("pf").onchange = renderPrices;
+  $("sq").oninput = renderStock; $("ss").onchange = renderStock;
+  $("close").onclick = closeDoc;
+  document.addEventListener("keydown", function (ev) { if (ev.key === "Escape" && S.doc) closeDoc(); });
+  /* загрузка накладных с сайта */
+  function sendFiles(list) {
+    var files = Array.prototype.filter.call(list || [], function (f) { return /^image\/|pdf$/.test(f.type) || /\.(pdf|jpe?g|png|heic|webp)$/i.test(f.name); });
+    if (!files.length) { toast("Нужны фото или PDF"); return; }
+    var one = files.length > 1 && confirm("Это страницы ОДНОЙ накладной?\n\nОК — одна накладная из " + files.length + " страниц.\nОтмена — каждый файл отдельная накладная.");
+    var fd = new FormData();
+    fd.append("loc", S.loc); fd.append("one", one ? "1" : "0");
+    files.forEach(function (f) { fd.append("files", f, f.name); });
+    var b = $("upFiles"); busy(b, true);
+    fetch("/almacen/api/upload", { method: "POST", body: fd, headers: hdrs(false), credentials: "same-origin" })
+      .then(function (r) { return r.json().then(function (j) { if (!r.ok || !j.ok) throw new Error(j.error || ("http " + r.status)); return j; }); })
+      .then(function (j) {
+        busy(b, false);
+        toast("Загружено: " + j.docs + " накл. Читаю — появится в списке через полминуты");
+        var n = 0, t = setInterval(function () { load(true); if (++n >= 8) clearInterval(t); }, 8000);
+      }).catch(function (e) { busy(b, false); toast("Не загрузилось: " + e.message); });
+  }
+  $("upFiles").onclick = function () { $("fileIn").value = ""; $("fileIn").click(); };
+  $("fileIn").onchange = function () { sendFiles(this.files); };
+  var dragN = 0;
+  document.addEventListener("dragenter", function (e) { if (S.doc || !e.dataTransfer || Array.prototype.indexOf.call(e.dataTransfer.types, "Files") < 0) return; dragN++; $("drop").classList.add("on"); });
+  document.addEventListener("dragleave", function () { if (--dragN <= 0) { dragN = 0; $("drop").classList.remove("on"); } });
+  document.addEventListener("dragover", function (e) { if (!S.doc) e.preventDefault(); });
+  document.addEventListener("drop", function (e) {
+    if (S.doc) return;
+    e.preventDefault(); dragN = 0; $("drop").classList.remove("on");
+    sendFiles(e.dataTransfer && e.dataTransfer.files);
+  });
+
+  $("upAll").onclick = function () {
+    var b = this;
+    if (!confirm("Выгрузить в Syrve все готовые накладные " + locName(S.loc) + "?")) return;
+    busy(b, true);
+    api("/almacen/api/upload_ready", { loc: S.loc }).then(function (r) {
+      busy(b, false);
+      toast("Выгружено: " + r.uploaded + (r.errors.length ? " · ошибок: " + r.errors.length : ""));
+      load(true);
+    }).catch(function (e) { busy(b, false); toast(e.message); });
+  };
+  Array.prototype.forEach.call(document.querySelectorAll("nav.views button"), function (b) {
+    b.onclick = function () {
+      S.view = b.dataset.view;
+      Array.prototype.forEach.call(document.querySelectorAll("nav.views button"), function (x) { x.setAttribute("aria-pressed", x === b); });
+      $("v-docs").hidden = S.view !== "docs"; $("v-prices").hidden = S.view !== "prices"; $("v-stock").hidden = S.view !== "stock";
+      if (S.view === "prices" && !S.prices) loadPrices();
+      if (S.view === "stock" && !S.stock) loadStock();
+    };
+  });
+
+  load(false);
+})();
+</script>
+</body>
+</html>
