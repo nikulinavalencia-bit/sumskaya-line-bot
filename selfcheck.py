@@ -11,31 +11,21 @@
 
 import ast
 import sys
+import asyncio
 import logging
 import os
 from datetime import datetime
 
+# через сколько секунд после старта возвращать кнопку «Меню»
+MENU_DELAY = int(os.environ.get("MENU_BUTTON_DELAY", "8") or 8)
+
 from aiogram.filters import Command
-from aiogram.types import (Message, BotCommand, BotCommandScopeDefault,
-                           BotCommandScopeChat, MenuButtonCommands)
+from aiogram.types import Message, BotCommand
 
 log = logging.getLogger("selfcheck")
 
 core = None
 STARTED_AT = None
-
-
-def owner_ids() -> set:
-    """Кто видит /version. Переменная Railway OWNER_IDS (через запятую);
-    если не задана — все Патроны."""
-    raw = os.environ.get("OWNER_IDS", "").replace(" ", "")
-    ids = {int(x) for x in raw.split(",") if x.strip().lstrip("-").isdigit()}
-    if ids:
-        return ids
-    try:
-        return set(core.patrons())
-    except Exception:
-        return set()
 
 
 def _src() -> str:
@@ -118,15 +108,6 @@ def build_checks():
         ("💶 Справочник поставщиков с правкой в боте",
          lambda: hasattr(sys.modules.get("fin_block"), "cb_prov_list")),
         ("🔍 Распознавание фактур включено (есть ключ Gemini)", _ocr_on),
-        ("🌐 Веб-архив сотрудников подключён (/archivo)",
-         lambda: bool(getattr(sys.modules.get("hr_web"), "M", None))),
-        ("🌐 Веб-архив: сервер запущен и задан HR_WEB_URL",
-         lambda: bool(getattr(sys.modules.get("hr_web"), "_runner", None))
-         and bool(os.environ.get("HR_WEB_URL"))),
-        ("📤 Файл для Control Laboral подключён (/controllaboral)",
-         lambda: bool(getattr(sys.modules.get("cl_export"), "M", None))),
-        ("🏖 Расчёт отпуска подключён (/vacaciones)",
-         lambda: bool(getattr(sys.modules.get("vacaciones"), "M", None))),
     ]
 
 
@@ -182,7 +163,14 @@ def report() -> str:
 
 
 async def cmd_version(m: Message):
-    if m.from_user.id not in owner_ids():
+    u = core.get_user(m.from_user.id)
+    allowed = core.is_patron(u)
+    try:
+        import fin_block
+        allowed = allowed or fin_block.is_findir(u, m.from_user.id)
+    except Exception:
+        pass
+    if not allowed:
         return
     try:
         await m.answer(report())
@@ -191,36 +179,63 @@ async def cmd_version(m: Message):
         await m.answer(f"Не смог собрать отчёт: <code>{type(ex).__name__}: {ex}</code>")
 
 
+def _commands() -> list:
+    """Список команд бота. Собираем по тому, какие модули реально подключены."""
+    cmds = [BotCommand(command="start", description="🔄 Обновить / открыть меню"),
+            BotCommand(command="version", description="🧾 Что залито на сервер")]
+    if "hr_web" in sys.modules:
+        cmds.insert(1, BotCommand(command="archivo",
+                                  description="👥 Архив сотрудников"))
+    return cmds
+
+
 async def _on_startup():
     global STARTED_AT
     STARTED_AT = core.now_local()
-    # Кнопка «Меню»: всем — только «Обновить»; Патронам — рабочие команды;
-    # «Что залито» — только владельцу (OWNER_IDS).
-    start_cmd = BotCommand(command="start", description="🔄 Обновить / открыть меню")
-    work = [
-        BotCommand(command="archivo", description="🌐 Архив сотрудников"),
-        BotCommand(command="vacaciones", description="🏖 Расчёт отпуска"),
-        BotCommand(command="controllaboral", description="📤 Файл для Control Laboral"),
-    ]
     try:
-        await core.bot.set_my_commands([start_cmd], scope=BotCommandScopeDefault())
+        await core.bot.set_my_commands(_commands())
     except Exception as ex:
         log.warning("не смог обновить список команд: %s", ex)
-    owners = owner_ids()
+    asyncio.create_task(_restore_menu_button())
+
+
+async def _restore_menu_button():
+    """Возвращаем кнопку «Меню» слева от поля ввода.
+
+    Модуль веб-архива сотрудников ставит на её место кнопку WebApp, и команды
+    становятся недоступны. Делаем это последним — с небольшой паузой, чтобы
+    перекрыть чужую установку, и только если MENU_BUTTON=commands (по умолчанию).
+    """
+    if os.environ.get("MENU_BUTTON", "commands").strip().lower() != "commands":
+        return
+    await asyncio.sleep(MENU_DELAY)
     try:
-        patrons = set(core.patrons())
+        from aiogram.types import MenuButtonCommands
+    except Exception as ex:
+        log.warning("кнопка меню недоступна в этой версии aiogram: %s", ex)
+        return
+    try:
+        await core.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+    except Exception as ex:
+        log.warning("не смог поставить меню по умолчанию: %s", ex)
+    # у кого кнопка уже была подменена — правим персонально
+    ids = set()
+    try:
+        ids.update(core.patrons())
     except Exception:
-        patrons = set()
-    for pid in patrons | owners:
-        cmds = [start_cmd] + (work if pid in patrons else [])
-        if pid in owners:
-            cmds.append(BotCommand(command="version", description="🧾 Что залито на сервер"))
+        pass
+    try:
+        import fin_block
+        ids.update(fin_block.findir_ids())
+    except Exception:
+        pass
+    for uid in ids:
         try:
-            await core.bot.set_my_commands(cmds, scope=BotCommandScopeChat(chat_id=pid))
-            # вернуть кнопку «Меню» на место (её временно занимал «Архив»)
-            await core.bot.set_chat_menu_button(chat_id=pid, menu_button=MenuButtonCommands())
+            await core.bot.set_chat_menu_button(chat_id=uid,
+                                                menu_button=MenuButtonCommands())
         except Exception as ex:
-            log.warning("команды для %s не выставлены: %s", pid, ex)
+            log.warning("кнопка меню для %s не поставлена: %s", uid, ex)
+    log.info("selfcheck: кнопка «Меню» восстановлена для %d чатов", len(ids))
 
 
 def setup(dp, core_module):

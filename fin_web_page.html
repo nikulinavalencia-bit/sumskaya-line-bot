@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Статус платежей · SUMSKAYA LINE</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --ground: #eef1ef;
+    --surface: #ffffff;
+    --surface-2: #f5f7f6;
+    --ink: #14201c;
+    --ink-soft: #5c6b65;
+    --line: #dde3e0;
+    --accent: #14624f;
+    --accent-soft: #dcefe8;
+    --warn: #8a5a0c;
+    --warn-soft: #fbeed3;
+    --danger: #a5382c;
+    --danger-soft: #f9e1dd;
+    --info: #2a5673;
+    --info-soft: #dfeaf2;
+    --radius: 12px;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0e1513;
+      --surface: #161f1c;
+      --surface-2: #1c2723;
+      --ink: #e3eae7;
+      --ink-soft: #94a39d;
+      --line: #27332e;
+      --accent: #57c9a8;
+      --accent-soft: #10312a;
+      --warn: #e0ab5f;
+      --warn-soft: #33270f;
+      --danger: #e98a7c;
+      --danger-soft: #38201c;
+      --info: #8ab6d6;
+      --info-soft: #14252f;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0e1513; --surface: #161f1c; --surface-2: #1c2723;
+    --ink: #e3eae7; --ink-soft: #94a39d; --line: #27332e;
+    --accent: #57c9a8; --accent-soft: #10312a;
+    --warn: #e0ab5f; --warn-soft: #33270f;
+    --danger: #e98a7c; --danger-soft: #38201c;
+    --info: #8ab6d6; --info-soft: #14252f;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: Manrope, system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding-inline: 16px; padding-block: 0 48px; }
+
+  header.bar {
+    position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5;
+    background: var(--ground);
+    border-bottom: 1px solid var(--line);
+    padding-block: 14px 12px;
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  }
+  h1 { font-size: 19px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--ink-soft); font-size: 13px; }
+  .spacer { flex: 1 1 auto; }
+  button.ghost {
+    font: inherit; font-size: 13px; color: var(--ink-soft);
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 8px; padding: 6px 12px; cursor: pointer;
+  }
+  button.ghost:hover { color: var(--ink); }
+  button.ghost:focus-visible, .chip:focus-visible, a.doc:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 16px; }
+  .tile { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
+  .tile .k { font-size: 12px; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+  .tile .v { font-size: 22px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .tile .v small { font-size: 13px; font-weight: 500; color: var(--ink-soft); }
+
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
+  .chip {
+    font: inherit; font-size: 13px; font-weight: 500;
+    background: var(--surface); color: var(--ink-soft);
+    border: 1px solid var(--line); border-radius: 999px;
+    padding: 6px 13px; cursor: pointer;
+  }
+  .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+
+  .list { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+  .row {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 14px 16px;
+    display: grid; grid-template-columns: 1fr auto; gap: 4px 14px; align-items: start;
+  }
+  .row.paid { border-left: 3px solid var(--accent); }
+  .row.attention { border-left: 3px solid var(--warn); }
+  .name { font-weight: 600; }
+  .meta { color: var(--ink-soft); font-size: 13px; }
+  .sum { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
+  .pill {
+    display: inline-block; font-size: 12px; font-weight: 600;
+    padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+  }
+  .pill.ok { background: var(--accent-soft); color: var(--accent); }
+  .pill.wait { background: var(--info-soft); color: var(--info); }
+  .pill.attention { background: var(--warn-soft); color: var(--warn); }
+  .pill.bad { background: var(--danger-soft); color: var(--danger); }
+  .rowfoot { grid-column: 1 / -1; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+  a.doc {
+    font-size: 13px; font-weight: 500; text-decoration: none;
+    color: var(--accent); background: var(--accent-soft);
+    border-radius: 8px; padding: 5px 11px;
+  }
+  .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12.5px; }
+
+  .empty, .error {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 28px 20px; text-align: center; color: var(--ink-soft); margin-top: 16px;
+  }
+  .error { border-color: var(--danger); color: var(--danger); }
+  footer { color: var(--ink-soft); font-size: 12.5px; margin-top: 22px; }
+
+  @media (max-width: 460px) {
+    .row { grid-template-columns: 1fr; }
+    .sum { text-align: left; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="bar">
+    <div>
+      <h1>Статус платежей</h1>
+      <div class="sub" id="who">SUMSKAYA LINE</div>
+    </div>
+    <div class="spacer"></div>
+    <button class="ghost" id="refresh" type="button">Обновить</button>
+  </header>
+
+  <section class="tiles" id="tiles" hidden></section>
+  <section class="filters" id="filters" hidden></section>
+  <section class="list" id="list"></section>
+  <div class="empty" id="loading">Загружаю…</div>
+  <footer id="foot"></footer>
+</div>
+
+<script>
+(function () {
+  var tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
+
+  var STATE = { rows: [], viewer: null, local: "all", status: "all" };
+
+  var STATUS = {
+    "новый":            { pill: "wait",      label: "Принят",              hint: "ждёт распознавания" },
+    "распознан":        { pill: "attention", label: "На проверке",         hint: "фин. директор проверяет данные" },
+    "нужен IBAN":       { pill: "attention", label: "Нужны реквизиты",     hint: "не хватает IBAN" },
+    "готов к ремесе":   { pill: "ok",        label: "В очереди на оплату", hint: "войдёт в ближайшую ремесу" },
+    "исключён":         { pill: "bad",       label: "Отложен",             hint: "перенесён на следующий платёжный день" },
+    "в ремесе":         { pill: "ok",        label: "В ремесе",            hint: "" },
+    "отправлено в банк":{ pill: "ok",        label: "Отправлено в банк",   hint: "" },
+    "оплачено":         { pill: "ok",        label: "Оплачено",            hint: "" }
+  };
+
+  function money(v) {
+    if (!v) return "—";
+    return v.toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
+  }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function headers() {
+    var h = {};
+    if (tg && tg.initData) h["X-TG-Init-Data"] = tg.initData;
+    return h;
+  }
+
+  function load(force) {
+    var url = "/pagos/api/data" + (force ? "?force=1" : "");
+    return fetch(url, { headers: headers(), credentials: "same-origin" }).then(function (r) {
+      if (r.status === 401) throw new Error("auth");
+      if (!r.ok) throw new Error("http " + r.status);
+      return r.json();
+    });
+  }
+
+  function tiles() {
+    var rows = STATE.rows;
+    var paid = rows.filter(function (r) { return r.estado === "оплачено"; });
+    var queue = rows.filter(function (r) {
+      return ["готов к ремесе", "в ремесе", "отправлено в банк"].indexOf(r.estado) >= 0;
+    });
+    var attention = rows.filter(function (r) {
+      return ["распознан", "нужен IBAN", "новый"].indexOf(r.estado) >= 0;
+    });
+    var sum = queue.reduce(function (a, r) { return a + (r.total || 0); }, 0);
+    var cells = [
+      ["Всего документов", rows.length, ""],
+      ["В очереди на оплату", queue.length, money(sum)],
+      ["Ждут проверки", attention.length, ""],
+      ["Оплачено", paid.length, ""]
+    ];
+    var el = document.getElementById("tiles");
+    el.innerHTML = cells.map(function (c) {
+      return '<div class="tile"><div class="k">' + esc(c[0]) + '</div><div class="v">' +
+        esc(c[1]) + (c[2] ? ' <small>' + esc(c[2]) + '</small>' : '') + '</div></div>';
+    }).join("");
+    el.hidden = false;
+  }
+
+  function filters() {
+    var locals = [];
+    STATE.rows.forEach(function (r) {
+      if (r.local && locals.indexOf(r.local) < 0) locals.push(r.local);
+    });
+    var el = document.getElementById("filters");
+    var html = '<button class="chip" type="button" data-kind="status" data-v="all" aria-pressed="' +
+      (STATE.status === "all") + '">Все</button>' +
+      '<button class="chip" type="button" data-kind="status" data-v="open" aria-pressed="' +
+      (STATE.status === "open") + '">В работе</button>' +
+      '<button class="chip" type="button" data-kind="status" data-v="paid" aria-pressed="' +
+      (STATE.status === "paid") + '">Оплаченные</button>';
+    if (locals.length > 1) {
+      html += '<span style="width:100%"></span>';
+      html += '<button class="chip" type="button" data-kind="local" data-v="all" aria-pressed="' +
+        (STATE.local === "all") + '">Все локали</button>';
+      html += locals.map(function (l) {
+        return '<button class="chip" type="button" data-kind="local" data-v="' + esc(l) +
+          '" aria-pressed="' + (STATE.local === l) + '">' + esc(l) + "</button>";
+      }).join("");
+    }
+    el.innerHTML = html;
+    el.hidden = false;
+    Array.prototype.forEach.call(el.querySelectorAll(".chip"), function (b) {
+      b.addEventListener("click", function () {
+        STATE[b.dataset.kind] = b.dataset.v;
+        render();
+      });
+    });
+  }
+
+  function visible() {
+    return STATE.rows.filter(function (r) {
+      if (STATE.local !== "all" && r.local !== STATE.local) return false;
+      if (STATE.status === "paid" && r.estado !== "оплачено") return false;
+      if (STATE.status === "open" && r.estado === "оплачено") return false;
+      return true;
+    });
+  }
+
+  function rowHtml(r) {
+    var st = STATUS[r.estado] || { pill: "wait", label: r.estado, hint: "" };
+    var cls = r.estado === "оплачено" ? "paid" :
+      (st.pill === "attention" || st.pill === "bad" ? "attention" : "");
+    var head = esc(r.proveedor || "Поставщик не указан");
+    var line2 = [r.local, r.fecha + (r.hora ? " " + r.hora : ""), r.autor]
+      .filter(Boolean).map(esc).join(" · ");
+    var docs = "";
+    if (r.has_doc) docs += '<a class="doc" href="/pagos/file/' + esc(r.id) + '" target="_blank" rel="noopener">Фактура</a>';
+    if (r.has_just) docs += '<a class="doc" href="/pagos/file/' + esc(r.id) + '?k=just" target="_blank" rel="noopener">Хустификанте</a>';
+    if (!r.has_just && r.justificante && r.estado !== "оплачено") {
+      docs += '<span class="meta">хустификанте придёт после оплаты</span>';
+    }
+    var num = r.numero ? '<span class="mono">' + esc(r.numero) + "</span>" : "";
+    var fecha = r.fecha_factura ? esc(r.fecha_factura) : "";
+    var detail = [num, fecha].filter(Boolean).join(" · ");
+    var paidAt = r.pagado ? ' · оплачено ' + esc(r.pagado) : "";
+
+    return '<article class="row ' + cls + '">' +
+      '<div><div class="name">' + head + "</div>" +
+      '<div class="meta">' + line2 + "</div>" +
+      (detail ? '<div class="meta">' + detail + "</div>" : "") +
+      "</div>" +
+      '<div><div class="sum">' + esc(money(r.total)) + "</div>" +
+      '<div style="text-align:right;margin-top:4px"><span class="pill ' + st.pill + '">' +
+      esc(st.label) + "</span></div></div>" +
+      '<div class="rowfoot">' + docs +
+      (st.hint ? '<span class="meta">' + esc(st.hint) + paidAt + "</span>"
+               : (paidAt ? '<span class="meta">' + paidAt.replace(" · ", "") + "</span>" : "")) +
+      "</div></article>";
+  }
+
+  function render() {
+    tiles();
+    filters();
+    var rows = visible();
+    var list = document.getElementById("list");
+    list.innerHTML = rows.length
+      ? rows.map(rowHtml).join("")
+      : '<div class="empty">Здесь пока ничего нет. Загрузи документ на оплату в боте: ' +
+        "💶 Финансы → Оплата.</div>";
+  }
+
+  function fail(kind) {
+    document.getElementById("loading").hidden = true;
+    var list = document.getElementById("list");
+    list.innerHTML = kind === "auth"
+      ? '<div class="error">Ссылка устарела. Откройте страницу заново из бота: ' +
+        "💶 Финансы → Статус платежей.</div>"
+      : '<div class="error">Не получилось загрузить данные. Попробуйте обновить страницу.</div>';
+  }
+
+  function boot(force) {
+    load(force).then(function (data) {
+      STATE.rows = data.rows || [];
+      STATE.viewer = data.viewer || {};
+      document.getElementById("loading").hidden = true;
+      document.getElementById("who").textContent =
+        (STATE.viewer.full ? "Все локали · " : "Мои документы · ") + "SUMSKAYA LINE";
+      document.getElementById("foot").textContent =
+        "Обновлено " + (data.updated || "") + ". Данные берутся из таблицы бота.";
+      render();
+    }).catch(function (e) {
+      fail(e && e.message === "auth" ? "auth" : "net");
+    });
+  }
+
+  document.getElementById("refresh").addEventListener("click", function () {
+    document.getElementById("loading").hidden = false;
+    document.getElementById("loading").textContent = "Обновляю…";
+    boot(true);
+  });
+
+  boot(false);
+})();
+</script>
+</body>
+</html>

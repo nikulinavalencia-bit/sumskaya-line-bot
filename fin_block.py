@@ -21,6 +21,7 @@
 """
 
 import os
+import re
 import html
 import asyncio
 import logging
@@ -31,7 +32,8 @@ from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKe
 
 log = logging.getLogger("fin")
 
-core = None          # модуль bot555 целиком — подставляется в setup()
+core = None          # модуль bot.py целиком — подставляется в setup()
+_dp = None           # диспетчер, нужен соседним модулям блока
 _routes_done = False
 
 # ---------------- НАСТРОЙКИ (открытые вопросы ТЗ — меняются одной строкой) ----------------
@@ -70,6 +72,7 @@ FIN_HEADERS = {
         "ID", "Дата", "Время", "Локаль", "Автор", "AuthorID", "ChatID", "MessageID",
         "FileID", "Тип файла", "Поставщик", "NIF", "IBAN", "База", "IVA", "Total",
         "Номер", "Дата фактуры", "Хустификанте", "Статус", "РемесаID",
+        "ХустификантеFileID", "Дата оплаты",
     ],
     PROVEEDORES_WS: [
         "Поставщик", "Алиасы", "NIF", "IBAN", "BIC", "Страна", "Город", "Адрес",
@@ -118,6 +121,7 @@ _await_prov_new = {}     # uid -> ts             : ждём данные нов�
 _await_prov_import = {}  # uid -> ts             : ждём список пачкой (текст или файл)
 _await_prov_find = {}    # uid -> ts             : ждём строку поиска
 _prov_query = {}         # uid -> строка поиска
+_await_just = {}         # uid -> (fid, ts)      : ждём хустификанте из банка
 
 
 def _fresh(ts) -> bool:
@@ -132,6 +136,7 @@ def _clear(uid: int):
     _await_prov_new.pop(uid, None)
     _await_prov_import.pop(uid, None)
     _await_prov_find.pop(uid, None)
+    _await_just.pop(uid, None)
 
 
 # ---------------- МЕЛКИЕ ХЕЛПЕРЫ ----------------
@@ -435,9 +440,12 @@ async def _root_screen(c: CallbackQuery, u):
     head = core.crumb("fin", core.ulang(u))
 
     if not is_findir(u, uid):
+        mine = [1 for _, r in facturas() if str(r.get("AuthorID", "")).strip() == str(uid)]
         await core.take_over(
-            c, f"{head}\n\nЗагрузи документ на оплату — я передам его финансовому отделу.",
-            kb([[btn("💳 Оплата — загрузить документ", "fin:up")]]))
+            c, f"{head}\n\nЗагрузи документ на оплату — я передам его финансовому отделу."
+               + (f"\n\nТвоих документов в работе: <b>{len(mine)}</b>" if mine else ""),
+            kb([[btn("💳 Оплата — загрузить документ", "fin:up")],
+                [btn("🌐 Статус моих платежей", "fin:web")]]))
         return
 
     rows_ = [[btn(f"{loc_label(code)}", f"fin:l:{code}")] for code in core.LOCALES]
@@ -447,6 +455,7 @@ async def _root_screen(c: CallbackQuery, u):
     except Exception:
         n_prov = 0
     rows_.append([btn(f"📇 Поставщики ({n_prov})", "fin:prov")])
+    rows_.append([btn("🌐 Статус платежей", "fin:web")])
     n = len(facturas(statuses=UNPAID))
     await core.take_over(c, f"{head}\n\nНеоплаченных документов всего: <b>{n}</b>", kb(rows_))
 
@@ -914,6 +923,11 @@ async def _render_card(c: CallbackQuery, fid: str, note: str = None) -> bool:
         rows_.append([btn("↩️ Вернуть в очередь", f"fin:inc:{fid}")])
     elif st in (ST_NEW, ST_RECOGNIZED, ST_NEED_IBAN, ST_READY):
         rows_.append([btn("🚫 Исключить из ремесы", f"fin:exc:{fid}")])
+    if st in (ST_READY, ST_IN_REMESA, ST_SENT):
+        rows_.append([btn("💸 Оплачено + хустификанте", f"fin:paid:{fid}")])
+    if str(r.get("ХустификантеFileID", "")).strip():
+        rows_.append([btn("🧾 Показать хустификанте", f"fin:jst:{fid}")])
+    rows_.append([btn("🗑 Удалить документ", f"fin:del:{fid}")])
     await core.take_over(c, card_text(r), kb(rows_))
     await c.answer(note or "")
     return True
@@ -939,16 +953,27 @@ async def cb_show(c: CallbackQuery):
     if not r:
         await c.answer("Документ не найден", show_alert=True)
         return
-    file_id = str(r.get("FileID", "")).strip()
+    just = c.data.startswith("fin:jst:")
+    file_id = str(r.get("ХустификантеFileID" if just else "FileID", "")).strip()
     if not file_id:
         await c.answer("Файл не сохранён", show_alert=True)
         return
-    cap = f"{e(r.get('Поставщик') or '')} · {money(r.get('Total'))}"
+    cap = ("🧾 Хустификанте · " if just else "") + \
+          f"{e(r.get('Поставщик') or '')} · {money(r.get('Total'))}"
+    as_photo = (not just) and str(r.get("Тип файла")).strip() == "photo"
+    chat = c.message.chat.id
     try:
-        if str(r.get("Тип файла")).strip() == "photo":
-            await core.bot.send_photo(c.message.chat.id, file_id, caption=cap)
-        else:
-            await core.bot.send_document(c.message.chat.id, file_id, caption=cap)
+        # хустификанте пришёл фото или файлом — пробуем оба варианта
+        try:
+            if as_photo:
+                await core.bot.send_photo(chat, file_id, caption=cap)
+            else:
+                await core.bot.send_document(chat, file_id, caption=cap)
+        except Exception:
+            if as_photo:
+                await core.bot.send_document(chat, file_id, caption=cap)
+            else:
+                await core.bot.send_photo(chat, file_id, caption=cap)
         await c.answer()
     except Exception as ex:
         log.warning("не смог отправить файл %s: %s", fid, ex)
@@ -956,14 +981,102 @@ async def cb_show(c: CallbackQuery):
 
 
 FILL_HELP = (
-    "✏️ Пришли данные одним сообщением, по строке на пункт:\n\n"
-    "<code>Поставщик\n"
-    "Номер фактуры\n"
-    "Дата фактуры (дд.мм.гггг)\n"
-    "Сумма к оплате\n"
-    "IBAN (если поставщика ещё нет в справочнике)</code>\n\n"
-    "Пятая строка нужна только для нового поставщика — для известного IBAN подставлю сам."
+    "✏️ <b>Правка данных</b>\n\n"
+    "Пришли только то, что нужно поправить — по строке на поле, в любом порядке. "
+    "Что это за поле, я пойму сама:\n\n"
+    "• <code>ES91 2100 …</code> — IBAN\n"
+    "• <code>1234,56</code> — сумма к оплате\n"
+    "• <code>15.09.2026</code> — дата фактуры\n"
+    "• <code>№ 2026/192</code> или <code>F-2026/192</code> — номер фактуры\n"
+    "• <code>B10467371</code> — NIF\n"
+    "• всё остальное — название поставщика\n\n"
+    "Можно одной строкой: пришлёшь только IBAN — поправлю только его."
 )
+
+# Явные подсказки, если хочется указать поле руками: «сумма: 1234,56»
+FIELD_HINTS = {
+    "поставщик": "Поставщик", "proveedor": "Поставщик",
+    "номер": "Номер", "фактура": "Номер", "factura": "Номер",
+    "дата": "Дата фактуры", "fecha": "Дата фактуры",
+    "сумма": "Total", "итого": "Total", "total": "Total",
+    "iban": "IBAN", "ибан": "IBAN",
+    "nif": "NIF", "cif": "NIF", "ниф": "NIF",
+    "база": "База", "base": "База",
+    "iva": "IVA", "ндс": "IVA",
+}
+
+
+def looks_like_iban(s: str) -> bool:
+    v = iban_clean(s)
+    return len(v) >= 15 and v[:2].isalpha() and v[2:4].isdigit()
+
+
+def looks_like_nif(s: str) -> bool:
+    v = str(s or "").replace("-", "").replace(" ", "").upper()
+    return bool(re.fullmatch(r"[A-Z]\d{7}[A-Z0-9]|\d{8}[A-Z]", v))
+
+
+def looks_like_date(s: str) -> bool:
+    return bool(re.fullmatch(r"\d{1,2}[./-]\d{1,2}[./-]\d{2,4}", str(s or "").strip()))
+
+
+def looks_like_amount(s: str) -> bool:
+    v = str(s or "").replace("€", "").strip()
+    return bool(re.fullmatch(r"[\d\s.,]+", v)) and any(c.isdigit() for c in v) \
+        and parse_amount(v) > 0
+
+
+def looks_like_numero(s: str) -> bool:
+    v = str(s or "").strip()
+    if len(v) > 24 or not any(c.isdigit() for c in v):
+        return False
+    return bool(re.search(r"[/\-№]", v)) or v.lower().startswith(("f", "fra", "nº", "no"))
+
+
+def parse_fill(text: str) -> tuple:
+    """Разбирает присланные строки по полям. -> (что записать, что не понято)"""
+    fields, unknown = {}, []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+
+        # «сумма: 1234,56» — поле названо явно
+        m = re.match(r"^\s*([A-Za-zА-Яа-яё ]{2,14})\s*[:=]\s*(.+)$", line)
+        if m:
+            hint = FIELD_HINTS.get(m.group(1).strip().lower())
+            if hint:
+                value = m.group(2).strip()
+                fields[hint] = (iban_clean(value) if hint == "IBAN"
+                                else f"{parse_amount(value):.2f}" if hint in ("Total", "База", "IVA")
+                                else value)
+                continue
+
+        if looks_like_iban(line):
+            fields["IBAN"] = iban_clean(line)
+        elif looks_like_date(line):
+            fields["Дата фактуры"] = _norm_fill_date(line)
+        elif looks_like_nif(line):
+            fields["NIF"] = line.replace(" ", "").upper()
+        elif looks_like_amount(line):
+            fields["Total"] = f"{parse_amount(line):.2f}"
+        elif looks_like_numero(line):
+            fields["Номер"] = line.lstrip("№ ").strip()
+        elif len(line) >= 3:
+            fields["Поставщик"] = line
+        else:
+            unknown.append(line)
+    return fields, unknown
+
+
+def _norm_fill_date(s: str) -> str:
+    m = re.match(r"^\s*(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\s*$", str(s))
+    if not m:
+        return str(s).strip()
+    d, mo, y = m.groups()
+    if len(y) == 2:
+        y = "20" + y
+    return f"{int(d):02d}.{int(mo):02d}.{y}"
 
 
 async def cb_fill(c: CallbackQuery):
@@ -982,16 +1095,13 @@ async def cb_fill(c: CallbackQuery):
 
 
 async def on_fill_text(m: Message):
+    """Ручная правка: принимаем ровно то, что прислали — хоть одну строку."""
     uid = m.from_user.id
     state = _await_fill.get(uid)
     if not state or not _fresh(state[1]):
         _await_fill.pop(uid, None)
         return
     fid = state[0]
-    parts = [p.strip() for p in (m.text or "").splitlines() if p.strip()]
-    if len(parts) < 4:
-        await m.answer("Нужно минимум 4 строки: поставщик, номер, дата, сумма. Попробуй ещё раз.")
-        return
 
     idx, r = find_factura(fid)
     if not r:
@@ -999,51 +1109,245 @@ async def on_fill_text(m: Message):
         await m.answer("Документ не найден — видимо, строку удалили из таблицы.")
         return
 
-    name, numero, fecha, total_raw = parts[0], parts[1], parts[2], parts[3]
-    iban_in = iban_clean(parts[4]) if len(parts) > 4 else ""
-    total = parse_amount(total_raw)
-    if total <= 0:
-        await m.answer("Сумму не понял. Напиши, например, <code>1234,56</code>.")
+    fields, unknown = parse_fill(m.text or "")
+    if not fields:
+        await m.answer("Не поняла, что править. Пришли IBAN, сумму, дату, номер "
+                       "или название поставщика — можно по одной строке.")
         return
-    if not core.parse_ddmmyyyy(fecha):
-        await m.answer("Дата не распознана, формат дд.мм.гггг. Попробуй ещё раз.")
-        return
+
+    # IBAN проверяем контрольным числом — опечатку ловим здесь
+    iban_in = fields.get("IBAN", "")
     if iban_in and not iban_valid(iban_in):
         await m.answer("IBAN не проходит проверку контрольного числа. Проверь и пришли снова.")
         return
-
-    prov = find_proveedor(name)
-    prov_iban = iban_clean(prov.get("IBAN")) if prov else ""
-    iban = iban_in or prov_iban
-    nif = str((prov or {}).get("NIF", "") or "")
-    warn = ""
-    if iban_in and prov_iban and iban_in != prov_iban:
-        warn = ("\n\n🔴 <b>Внимание:</b> присланный IBAN не совпадает с тем, что в справочнике "
-                f"({mask_iban(prov_iban)}). В таблицу записал присланный — проверь реквизиты "
-                "с поставщиком, это классическая схема подмены счёта.")
-
-    status = ST_READY if iban_valid(iban) else ST_NEED_IBAN
-    _await_fill.pop(uid, None)
-
-    try:
-        set_fields(FACTURAS_WS, idx, {
-            "Поставщик": name, "Номер": numero, "Дата фактуры": fecha,
-            "Total": f"{total:.2f}", "IBAN": iban, "NIF": nif, "Статус": status,
-        })
-    except Exception as ex:
-        log.exception("не смог обновить фактуру %s: %s", fid, ex)
-        await m.answer("Не смог записать в таблицу, попробуй ещё раз.")
+    fecha = fields.get("Дата фактуры", "")
+    if fecha and not core.parse_ddmmyyyy(fecha):
+        await m.answer("Дата не распознана, формат дд.мм.гггг. Попробуй ещё раз.")
         return
 
-    if iban_in and not prov:
+    warn = ""
+    name = fields.get("Поставщик") or str(r.get("Поставщик", "")).strip()
+    prov = find_proveedor(name) if name else None
+    prov_iban = iban_clean(prov.get("IBAN")) if prov else ""
+
+    # прислали поставщика, а IBAN не прислали — подставим из справочника
+    if not iban_in and prov_iban and not iban_valid(r.get("IBAN")):
+        fields["IBAN"] = prov_iban
+        if prov.get("NIF") and not str(r.get("NIF", "")).strip():
+            fields.setdefault("NIF", str(prov.get("NIF")))
+        warn += "\n\n➕ IBAN подставлен из справочника."
+    if iban_in and prov_iban and iban_in != prov_iban:
+        warn += ("\n\n🔴 <b>Внимание:</b> присланный IBAN не совпадает с тем, что в "
+                 f"справочнике ({mask_iban(prov_iban)}). Записала присланный — проверь "
+                 "реквизиты с поставщиком, это классическая схема подмены счёта.")
+
+    # статус пересчитываем по тому, что получилось в строке после правки
+    merged = dict(r)
+    merged.update(fields)
+    total = parse_amount(merged.get("Total"))
+    iban_final = iban_clean(merged.get("IBAN"))
+    old_status = str(r.get("Статус", "")).strip()
+    if old_status in (ST_IN_REMESA, ST_SENT, ST_PAID):
+        pass                                   # оплаченное не трогаем
+    elif total and iban_valid(iban_final) and merged.get("Номер") and merged.get("Дата фактуры"):
+        fields["Статус"] = ST_READY
+    elif total and not iban_valid(iban_final):
+        fields["Статус"] = ST_NEED_IBAN
+    elif total:
+        fields["Статус"] = ST_RECOGNIZED
+
+    _await_fill.pop(uid, None)
+    try:
+        set_fields(FACTURAS_WS, idx, fields)
+    except Exception as ex:
+        log.exception("не смог обновить фактуру %s: %s", fid, ex)
+        await m.answer("Не смогла записать в таблицу, попробуй ещё раз.")
+        return
+
+    if iban_in and name and not prov:
         try:
-            add_proveedor(name, iban_in, nif, m.from_user.full_name)
+            add_proveedor(name, iban_in, str(merged.get("NIF", "")), m.from_user.full_name)
             warn += "\n\n➕ Поставщик добавлен в справочник."
         except Exception as ex:
             log.warning("поставщик не добавлен: %s", ex)
 
+    changed = ", ".join(k for k in fields if k != "Статус")
+    if unknown:
+        warn += "\n\n⚠️ Не поняла строки: " + ", ".join(e(u) for u in unknown[:3])
+
     _, r2 = find_factura(fid)
-    await m.answer(card_text(r2 or r) + warn,
+    await m.answer(f"✅ Обновлено: {e(changed)}\n\n" + card_text(r2 or r) + warn,
+                   reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                       [btn("К документу", f"fin:doc:{fid}")]]))
+
+
+# ---------------- ВЕБ-СТРАНИЦА СТАТУСА ПЛАТЕЖЕЙ ----------------
+
+async def cb_web_link(c: CallbackQuery):
+    """Личная ссылка на страницу статуса платежей. Видит каждый сотрудник —
+    свои документы; фин. директор и патрон — все."""
+    u = core.guard(c)
+    if not u:
+        await deny(c)
+        return
+    try:
+        import fin_web
+        await fin_web.send_link(c.message.chat.id, c.from_user.id)
+        await c.answer()
+    except Exception as ex:
+        log.warning("страница статуса недоступна: %s", ex)
+        await c.answer("Страница статуса ещё не настроена", show_alert=True)
+
+
+# ---------------- УДАЛЕНИЕ, ОПЛАТА, ХУСТИФИКАНТЕ ----------------
+
+async def cb_delete_ask(c: CallbackQuery):
+    """Спрашиваем подтверждение — удаление строки необратимо."""
+    u = core.guard(c)
+    if not u or not is_findir(u, c.from_user.id):
+        await deny(c)
+        return
+    fid = c.data.split(":")[2]
+    _, r = find_factura(fid)
+    if not r:
+        await c.answer("Документ не найден", show_alert=True)
+        return
+    await core.take_over(
+        c,
+        f"🗑 <b>Удалить документ?</b>\n\n{card_text(r)}\n\n"
+        f"Строка исчезнет из таблицы насовсем. Отменить будет нельзя.",
+        kb([[btn("🗑 Да, удалить", f"fin:delok:{fid}")],
+            [btn("↩️ Нет, оставить", f"fin:doc:{fid}")]], back=False))
+    await c.answer()
+
+
+async def cb_delete_do(c: CallbackQuery):
+    u = core.guard(c)
+    if not u or not is_findir(u, c.from_user.id):
+        await deny(c)
+        return
+    fid = c.data.split(":")[2]
+    idx, r = find_factura(fid)
+    if not r:
+        await c.answer("Документ не найден", show_alert=True)
+        return
+    loc = str(r.get("Локаль", "")).strip()
+    try:
+        w = core.ws(FACTURAS_WS)
+        core.sheets_write_retry(w.delete_rows, idx)
+        core.drop_cache(FACTURAS_WS)
+    except Exception as ex:
+        log.exception("не смогла удалить строку %s: %s", fid, ex)
+        await c.answer("Таблица не дала удалить строку", show_alert=True)
+        return
+    c2 = c.model_copy(update={"data": f"fin:unp:{loc}"}) if loc in core.LOCALES else c
+    if loc in core.LOCALES:
+        await cb_unpaid(c2)
+    else:
+        await _root_screen(c, u)
+        await c.answer("Удалено")
+
+
+async def cb_paid_ask(c: CallbackQuery):
+    """Фин. директор оплатил в банке: ждём хустификанте или отметку без него."""
+    u = core.guard(c)
+    if not u or not is_findir(u, c.from_user.id):
+        await deny(c)
+        return
+    fid = c.data.split(":")[2]
+    _, r = find_factura(fid)
+    if not r:
+        await c.answer("Документ не найден", show_alert=True)
+        return
+    _await_just[c.from_user.id] = (fid, time())
+    need = str(r.get("Хустификанте", "")).strip().lower() == "да"
+    who = f"\n\nАвтор загрузки ({e(r.get('Автор'))}) просил хустификанте — " \
+          f"перешлю ему сразу." if need else ""
+    await core.take_over(
+        c,
+        f"💸 <b>Оплата</b>\n\n{e(r.get('Поставщик'))} · {money(r.get('Total'))}\n\n"
+        f"Пришли хустификанте из банка — фото или PDF. Он привяжется к этой фактуре, "
+        f"и процесс закроется.{who}",
+        kb([[btn("✅ Отметить оплаченной без хустификанте", f"fin:paidonly:{fid}")],
+            [btn("❌ Отмена", f"fin:doc:{fid}")]], back=False))
+    await c.answer()
+
+
+async def mark_paid(fid: str, author_name: str, just_file_id: str = "",
+                    just_type: str = "") -> dict:
+    idx, r = find_factura(fid)
+    if not r:
+        return {}
+    fields = {"Статус": ST_PAID,
+              "Дата оплаты": core.now_local().strftime("%d.%m.%Y %H:%M")}
+    if just_file_id:
+        fields["ХустификантеFileID"] = just_file_id
+    set_fields(FACTURAS_WS, idx, fields)
+    _, r2 = find_factura(fid)
+    return r2 or r
+
+
+async def send_justificante(r: dict, file_id: str, ftype: str):
+    """Пересылаем хустификанте тому, кто грузил документ и ставил галочку."""
+    if str(r.get("Хустификанте", "")).strip().lower() != "да":
+        return
+    try:
+        uid = int(str(r.get("AuthorID", "")).strip())
+    except (TypeError, ValueError):
+        return
+    cap = (f"💸 Оплачено: {e(r.get('Поставщик'))} · {money(r.get('Total'))}\n"
+           f"{loc_label(str(r.get('Локаль', '')).strip())} · фактура {e(r.get('Номер'))}")
+    try:
+        if ftype == "photo":
+            await core.bot.send_photo(uid, file_id, caption=cap)
+        else:
+            await core.bot.send_document(uid, file_id, caption=cap)
+    except Exception as ex:
+        log.warning("хустификанте автору %s не ушёл: %s", uid, ex)
+
+
+async def cb_paid_only(c: CallbackQuery):
+    u = core.guard(c)
+    if not u or not is_findir(u, c.from_user.id):
+        await deny(c)
+        return
+    fid = c.data.split(":")[2]
+    _await_just.pop(c.from_user.id, None)
+    r = await mark_paid(fid, c.from_user.full_name)
+    if not r:
+        await c.answer("Документ не найден", show_alert=True)
+        return
+    await _render_card(c, fid, "Отмечено оплаченной")
+
+
+async def on_justificante(m: Message):
+    """Файл от фин. директора после нажатия «Оплата»."""
+    uid = m.from_user.id
+    state = _await_just.get(uid)
+    if not state or not _fresh(state[1]):
+        _await_just.pop(uid, None)
+        return
+    fid = state[0]
+    if m.photo:
+        file_id, ftype = m.photo[-1].file_id, "photo"
+    elif m.document:
+        file_id, ftype = m.document.file_id, "document"
+    else:
+        return
+    _await_just.pop(uid, None)
+
+    try:
+        r = await mark_paid(fid, m.from_user.full_name, file_id, ftype)
+    except Exception as ex:
+        log.exception("не смогла записать хустификанте: %s", ex)
+        await m.answer("Не смогла записать в таблицу, попробуй ещё раз.")
+        return
+    if not r:
+        await m.answer("Документ не найден.")
+        return
+    await send_justificante(r, file_id, ftype)
+    sent = " Автору отправлен." if str(r.get("Хустификанте", "")).lower() == "да" else ""
+    await m.answer(f"✅ Хустификанте привязан, фактура закрыта.{sent}\n\n" + card_text(r),
                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                        [btn("К документу", f"fin:doc:{fid}")]]))
 
@@ -1598,6 +1902,12 @@ CALLBACKS = [
     ("fin:doc:", cb_card, False),
     ("fin:ok:", cb_confirm, False),
     ("fin:show:", cb_show, False),
+    ("fin:jst:", cb_show, False),
+    ("fin:delok:", cb_delete_do, False),
+    ("fin:del:", cb_delete_ask, False),
+    ("fin:paidonly:", cb_paid_only, False),
+    ("fin:paid:", cb_paid_ask, False),
+    ("fin:web", cb_web_link, True),
     ("fin:fill:", cb_fill, False),
     ("fin:exc:", cb_exclude, False),
     ("fin:inc:", cb_include, False),
@@ -1657,14 +1967,23 @@ def setup(dp, core_module):
     забирает финблок, а всё остальное как работало, так и работает: фильтры
     требуют либо префикс fin:, либо наше состояние ожидания.
     """
-    global core
+    global core, _dp
     core = core_module
+    _dp = dp
 
     # свои листы — чтобы ensure_headers() на старте создал их с правильной шапкой
     try:
         core.HEADERS.update(FIN_HEADERS)
     except Exception as ex:
         log.warning("не смог зарегистрировать шапки листов: %s", ex)
+
+    # веб-страница статуса платежей живёт в отдельном файле и делит
+    # веб-сервер с архивом сотрудников — порт у Railway один
+    try:
+        import fin_web
+        fin_web.setup(core_module)
+    except Exception as ex:
+        log.warning("fin_web не подключён: %s", ex)
 
     for prefix, fn, exact in CALLBACKS:
         flt = (F.data == prefix) if exact else F.data.startswith(prefix)
@@ -1689,6 +2008,13 @@ def setup(dp, core_module):
         F.chat.type == "private",
         F.document,
         lambda m: m.from_user and m.from_user.id in _await_prov_import,
+    )
+    # хустификанте из банка — фото или файл после нажатия «Оплачено»
+    dp.message.register(
+        on_justificante,
+        F.chat.type == "private",
+        F.photo | F.document,
+        lambda m: m.from_user and m.from_user.id in _await_just,
     )
     dp.message.register(
         on_prov_text,
