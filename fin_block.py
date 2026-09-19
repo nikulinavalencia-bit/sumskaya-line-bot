@@ -1960,6 +1960,54 @@ def _wrap(fn):
     return inner
 
 
+def install_quota_guard():
+    """Защита от лимита Google Sheets (60 чтений в минуту на пользователя).
+
+    Модулей у бота стало много, и на старте они читают таблицы почти
+    одновременно: шапки всех листов, архив сотрудников, заявки, справочники.
+    Google отвечает 429, gspread бросает APIError, бот падает — и Railway
+    поднимает его заново, снова сжигая квоту.
+
+    Оборачиваем запросы gspread: на 429 и временные ошибки сервера ждём и
+    повторяем. Это чинит и соседние модули, менять их файлы не нужно.
+    """
+    try:
+        from gspread.http_client import HTTPClient
+    except Exception as ex:
+        log.warning("не смог поставить защиту от лимита Google: %s", ex)
+        return
+    orig = getattr(HTTPClient, "request", None)
+    if orig is None or getattr(orig, "_quota_guard", False):
+        return
+
+    import time as _time
+
+    RETRY_AFTER = (3, 8, 20)
+
+    def guarded(self, *args, **kwargs):
+        last = None
+        for i, pause in enumerate((0,) + RETRY_AFTER):
+            if pause:
+                _time.sleep(pause)
+            try:
+                return orig(self, *args, **kwargs)
+            except Exception as ex:
+                text = str(ex)
+                transient = ("[429]" in text or "Quota exceeded" in text
+                             or "[500]" in text or "[503]" in text
+                             or "rateLimitExceeded" in text)
+                if not transient or i == len(RETRY_AFTER):
+                    raise
+                last = ex
+                log.warning("Google ответил лимитом, жду %d сек и повторяю", RETRY_AFTER[i])
+        if last:
+            raise last
+
+    guarded._quota_guard = True
+    HTTPClient.request = guarded
+    log.info("защита от лимита Google Sheets установлена")
+
+
 def setup(dp, core_module):
     """Вызывается из bot555.py сразу после создания Dispatcher.
 
@@ -1970,6 +2018,9 @@ def setup(dp, core_module):
     global core, _dp
     core = core_module
     _dp = dp
+
+    # ставим первым делом: дальше стартуют и читают таблицы все остальные модули
+    install_quota_guard()
 
     # свои листы — чтобы ensure_headers() на старте создал их с правильной шапкой
     try:

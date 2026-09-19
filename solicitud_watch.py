@@ -33,6 +33,7 @@ _started = False
 NOTIFY_IDS = [int(x) for x in os.environ.get("HR_NOTIFY_IDS", "").replace(" ", "").split(",")
               if x.isdigit()]
 INTERVAL = int(os.environ.get("HR_WATCH_INTERVAL", "300") or 300)
+START_DELAY = int(os.environ.get("HR_WATCH_START_DELAY", "60") or 60)
 NOTIFY_ON_START = os.environ.get("HR_NOTIFY_ON_START", "").strip() in ("1", "true", "yes", "да")
 
 
@@ -138,6 +139,9 @@ async def check_once(first_run: bool = False) -> int:
 
 
 async def loop():
+    # на старте таблицы читают сразу несколько модулей — не лезем в ту же
+    # минуту, иначе упираемся в лимит Google Sheets
+    await asyncio.sleep(START_DELAY)
     await check_once(first_run=True)
     while True:
         await asyncio.sleep(INTERVAL)
