@@ -108,7 +108,21 @@ def build_checks():
         ("💶 Справочник поставщиков с правкой в боте",
          lambda: hasattr(sys.modules.get("fin_block"), "cb_prov_list")),
         ("🔍 Распознавание фактур включено (есть ключ Gemini)", _ocr_on),
+        ("🛡 Защита от лимита Google Sheets", _quota_on),
+        ("🛡 Шапки листов проверяются пакетом", _headers_on),
     ]
+
+
+def _quota_on() -> bool:
+    try:
+        from gspread.http_client import HTTPClient
+        return bool(getattr(HTTPClient.request, "_quota_guard", False))
+    except Exception:
+        return False
+
+
+def _headers_on() -> bool:
+    return bool(getattr(getattr(core, "ensure_headers", None), "_fin_guard", False))
 
 
 def _ocr_on() -> bool:

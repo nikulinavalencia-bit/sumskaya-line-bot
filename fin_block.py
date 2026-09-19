@@ -1981,14 +1981,41 @@ def install_quota_guard():
         return
 
     import time as _time
+    import threading
 
-    RETRY_AFTER = (3, 8, 20)
+    # Квота Google — 60 запросов в минуту. Держим скользящее окно: пока
+    # запросов меньше порога, не тормозим совсем; на подходе к лимиту
+    # притормаживаем ровно настолько, чтобы в него не упереться.
+    WINDOW = 60.0
+    SOFT_LIMIT = int(os.environ.get("SHEETS_SOFT_LIMIT", "45") or 45)
+    # последняя пауза длиннее минуты: за это время квота Google обнуляется
+    try:
+        RETRY_AFTER = tuple(float(x) for x in
+                            os.environ.get("SHEETS_RETRY_PAUSES", "5,15,30,65").split(",") if x.strip())
+    except Exception:
+        RETRY_AFTER = (5, 15, 30, 65)
+    lock = threading.Lock()
+    recent = []
+
+    def _pace():
+        """Ждём, если за последнюю минуту уже почти выбрали квоту."""
+        while True:
+            with lock:
+                now = _time.monotonic()
+                recent[:] = [t for t in recent if now - t < WINDOW]
+                if len(recent) < SOFT_LIMIT:
+                    recent.append(now)
+                    return
+                wait = WINDOW - (now - recent[0]) + 0.3
+            log.info("подхожу к лимиту Google, притормаживаю на %.0f сек", wait)
+            _time.sleep(max(wait, 0.5))
 
     def guarded(self, *args, **kwargs):
         last = None
         for i, pause in enumerate((0,) + RETRY_AFTER):
             if pause:
                 _time.sleep(pause)
+            _pace()
             try:
                 return orig(self, *args, **kwargs)
             except Exception as ex:
@@ -1999,6 +2026,8 @@ def install_quota_guard():
                 if not transient or i == len(RETRY_AFTER):
                     raise
                 last = ex
+                with lock:
+                    recent.clear()      # лимит уже выбран — окно считаем заново
                 log.warning("Google ответил лимитом, жду %d сек и повторяю", RETRY_AFTER[i])
         if last:
             raise last
@@ -2006,6 +2035,84 @@ def install_quota_guard():
     guarded._quota_guard = True
     HTTPClient.request = guarded
     log.info("защита от лимита Google Sheets установлена")
+
+
+def _sheet_range(title: str) -> str:
+    return "'" + str(title).replace("'", "''") + "'!1:1"
+
+
+def _ensure_headers_batch():
+    """Шапки всех листов — за два запроса вместо трёх десятков.
+
+    Старый способ: на каждый лист отдельное чтение первой строки и отдельная
+    запись. Листов стало шестнадцать, модулей — шесть, и на старте всё это
+    упирается в лимит Google (60 запросов в минуту). Здесь читаем первые строки
+    всех листов одним запросом и дописываем недостающие колонки тоже одним.
+    """
+    sheets = {}
+    for name in list(core.HEADERS.keys()):
+        try:
+            sheets[name] = core.ws(name)       # лист создастся, если его нет
+        except Exception as ex:
+            log.warning("лист «%s» недоступен: %s", name, ex)
+
+    if not sheets:
+        return
+
+    ranges = [_sheet_range(w.title) for w in sheets.values()]
+    got = core._sh.values_batch_get(ranges)
+    values = got.get("valueRanges", [])
+
+    data = []
+    for (name, w), vr in zip(sheets.items(), values):
+        cols = core.HEADERS.get(name, [])
+        if not cols:
+            continue
+        rows_ = vr.get("values") or []
+        cur = rows_[0] if rows_ else []
+        title = _sheet_range(w.title)[:-4]      # без !1:1
+        if not cur:
+            data.append({"range": f"{title}!A1", "values": [cols]})
+            continue
+        missing = [c for c in cols if c not in cur]
+        if missing:
+            data.append({"range": f"{title}!{chr(65 + len(cur))}1", "values": [missing]})
+
+    if data:
+        core._sh.values_batch_update({"valueInputOption": "RAW", "data": data})
+        log.info("шапки листов дополнены: %d лист(ов)", len(data))
+
+
+def install_headers_guard():
+    """Проверка шапок на старте не должна ронять бота.
+
+    Раньше при лимите Google исключение из ensure_headers() валило процесс,
+    Railway поднимал бота заново, тот снова бил в лимит — и так по кругу.
+    Теперь: считаем экономно, а если Google всё же отказал — пишем в лог и
+    работаем дальше, шапки проверятся при следующем перезапуске.
+    """
+    orig = getattr(core, "ensure_headers", None)
+    if orig is None or getattr(orig, "_fin_guard", False):
+        return
+
+    def ensure_headers():
+        try:
+            _ensure_headers_batch()
+            return
+        except Exception as ex:
+            log.warning("быстрая проверка шапок не прошла (%s), пробую обычную", ex)
+        try:
+            orig()
+        except Exception as ex:
+            log.warning("шапки листов проверить не удалось (%s) — "
+                        "бот продолжает работу, проверю при следующем запуске", ex)
+
+    ensure_headers._fin_guard = True
+    try:
+        core.ensure_headers = ensure_headers
+        log.info("проверка шапок листов переведена на пакетный режим")
+    except Exception as ex:
+        log.warning("не смог заменить ensure_headers: %s", ex)
 
 
 def setup(dp, core_module):
@@ -2027,6 +2134,9 @@ def setup(dp, core_module):
         core.HEADERS.update(FIN_HEADERS)
     except Exception as ex:
         log.warning("не смог зарегистрировать шапки листов: %s", ex)
+
+    # и сама проверка шапок — пакетом и без падения
+    install_headers_guard()
 
     # веб-страница статуса платежей живёт в отдельном файле и делит
     # веб-сервер с архивом сотрудников — порт у Railway один
