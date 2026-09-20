@@ -95,7 +95,33 @@
   .tile .v { font-size: 22px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
   .tile .v small { font-size: 13px; font-weight: 500; color: var(--ink-soft); }
 
-  .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; align-items: center; }
+  .filters .sep { flex-basis: 100%; height: 0; }
+
+  .period {
+    display: flex; align-items: center; gap: 4px; margin-top: 16px;
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 999px; padding: 4px; width: max-content; max-width: 100%;
+  }
+  .period button {
+    font: inherit; font-size: 15px; line-height: 1; color: var(--ink-soft);
+    background: transparent; border: 0; border-radius: 999px;
+    padding: 7px 11px; cursor: pointer;
+  }
+  .period button:hover { background: var(--surface-2); color: var(--ink); }
+  .period .now { font-size: 13px; font-weight: 600; }
+  .period label {
+    display: flex; align-items: center; gap: 6px; cursor: pointer;
+    padding: 6px 12px; border-radius: 999px; font-size: 14px; font-weight: 600;
+    min-width: 9.5em; justify-content: center;
+  }
+  .period label:hover { background: var(--surface-2); }
+  .period input[type="month"] {
+    position: absolute; width: 1px; height: 1px; opacity: 0;
+    pointer-events: none; margin: 0; padding: 0; border: 0;
+  }
+  .period label:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+
   .chip {
     font: inherit; font-size: 13px; font-weight: 500;
     background: var(--surface); color: var(--ink-soft);
@@ -156,6 +182,16 @@
     <button class="ghost" id="refresh" type="button">Обновить</button>
   </header>
 
+  <section class="period" id="period" hidden>
+    <button type="button" id="mprev" aria-label="Предыдущий месяц">‹</button>
+    <label id="mlabel">
+      <span id="mtext">—</span>
+      <input type="month" id="mpick" aria-label="Выбрать месяц">
+    </label>
+    <button type="button" id="mnext" aria-label="Следующий месяц">›</button>
+    <button type="button" id="mall" class="now">Весь период</button>
+  </section>
+
   <section class="tiles" id="tiles" hidden></section>
   <section class="filters" id="filters" hidden></section>
   <section class="list" id="list"></section>
@@ -168,7 +204,8 @@
   var tg = window.Telegram && window.Telegram.WebApp;
   if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
 
-  var STATE = { rows: [], viewer: null, local: "all", status: "all" };
+  var STATE = { rows: [], locales: [], viewer: null, local: "all", status: "all",
+               month: null, today: "" };
 
   var STATUS = {
     "новый":            { pill: "wait",      label: "Принят",              hint: "ждёт распознавания" },
@@ -207,7 +244,7 @@
   }
 
   function tiles() {
-    var rows = STATE.rows;
+    var rows = inPeriod();           // плитки считаем по выбранному месяцу и локали
     var paid = rows.filter(function (r) { return r.estado === "оплачено"; });
     var queue = rows.filter(function (r) {
       return ["готов к ремесе", "в ремесе", "отправлено в банк"].indexOf(r.estado) >= 0;
@@ -230,27 +267,40 @@
     el.hidden = false;
   }
 
-  function filters() {
-    var locals = [];
+  function localList() {
+    // список подразделений приходит с сервера — кнопки есть всегда,
+    // даже если по локали ещё ни одного документа
+    var out = (STATE.locales || []).slice();
+    var have = {};
+    out.forEach(function (l) { have[l.code] = true; });
     STATE.rows.forEach(function (r) {
-      if (r.local && locals.indexOf(r.local) < 0) locals.push(r.local);
+      if (r.local_code && !have[r.local_code]) {
+        have[r.local_code] = true;
+        out.push({ code: r.local_code, label: r.local || r.local_code });
+      }
     });
+    return out;
+  }
+
+  function chip(kind, value, label, count) {
+    var on = STATE[kind] === value;
+    return '<button class="chip" type="button" data-kind="' + kind + '" data-v="' + esc(value) +
+      '" aria-pressed="' + on + '">' + esc(label) +
+      (count == null ? "" : ' <span style="opacity:.65">' + count + "</span>") + "</button>";
+  }
+
+  function filters() {
     var el = document.getElementById("filters");
-    var html = '<button class="chip" type="button" data-kind="status" data-v="all" aria-pressed="' +
-      (STATE.status === "all") + '">Все</button>' +
-      '<button class="chip" type="button" data-kind="status" data-v="open" aria-pressed="' +
-      (STATE.status === "open") + '">В работе</button>' +
-      '<button class="chip" type="button" data-kind="status" data-v="paid" aria-pressed="' +
-      (STATE.status === "paid") + '">Оплаченные</button>';
-    if (locals.length > 1) {
-      html += '<span style="width:100%"></span>';
-      html += '<button class="chip" type="button" data-kind="local" data-v="all" aria-pressed="' +
-        (STATE.local === "all") + '">Все локали</button>';
-      html += locals.map(function (l) {
-        return '<button class="chip" type="button" data-kind="local" data-v="' + esc(l) +
-          '" aria-pressed="' + (STATE.local === l) + '">' + esc(l) + "</button>";
-      }).join("");
-    }
+    var base = inMonth();            // счётчики локалей — в рамках выбранного месяца
+    var html = chip("status", "all", "Все") +
+      chip("status", "open", "В работе") +
+      chip("status", "paid", "Оплаченные") +
+      '<span class="sep"></span>' +
+      chip("local", "all", "Все локали", base.length);
+    html += localList().map(function (l) {
+      var n = base.filter(function (r) { return r.local_code === l.code; }).length;
+      return chip("local", l.code, l.label, n);
+    }).join("");
     el.innerHTML = html;
     el.hidden = false;
     Array.prototype.forEach.call(el.querySelectorAll(".chip"), function (b) {
@@ -261,9 +311,67 @@
     });
   }
 
+  // ---------- месяц ----------
+  var MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль",
+                "август", "сентябрь", "октябрь", "ноябрь", "декабрь"];
+
+  function monthLabel(m) {
+    if (!m) return "Весь период";
+    var p = m.split("-");
+    return MONTHS[(parseInt(p[1], 10) || 1) - 1] + " " + p[0];
+  }
+
+  function shiftMonth(m, step) {
+    var p = (m || "").split("-");
+    var y = parseInt(p[0], 10), mo = parseInt(p[1], 10) + step;
+    if (!y) return m;
+    while (mo < 1) { mo += 12; y -= 1; }
+    while (mo > 12) { mo -= 12; y += 1; }
+    return y + "-" + (mo < 10 ? "0" : "") + mo;
+  }
+
+  function inMonth() {
+    if (!STATE.month) return STATE.rows;
+    return STATE.rows.filter(function (r) { return r.mes === STATE.month; });
+  }
+
+  function inPeriod() {
+    return inMonth().filter(function (r) {
+      return STATE.local === "all" || r.local_code === STATE.local;
+    });
+  }
+
+  function period() {
+    var el = document.getElementById("period");
+    document.getElementById("mtext").textContent = monthLabel(STATE.month);
+    var pick = document.getElementById("mpick");
+    if (STATE.month) pick.value = STATE.month;
+    var all = document.getElementById("mall");
+    all.textContent = STATE.month ? "Весь период" : "← вернуть месяц";
+    el.hidden = false;
+  }
+
+  function bindPeriod() {
+    document.getElementById("mprev").addEventListener("click", function () {
+      STATE.month = shiftMonth(STATE.month || STATE.today, -1);
+      render();
+    });
+    document.getElementById("mnext").addEventListener("click", function () {
+      STATE.month = shiftMonth(STATE.month || STATE.today, 1);
+      render();
+    });
+    document.getElementById("mpick").addEventListener("change", function () {
+      STATE.month = this.value || "";
+      render();
+    });
+    document.getElementById("mall").addEventListener("click", function () {
+      STATE.month = STATE.month ? "" : STATE.today;
+      render();
+    });
+  }
+
   function visible() {
-    return STATE.rows.filter(function (r) {
-      if (STATE.local !== "all" && r.local !== STATE.local) return false;
+    return inPeriod().filter(function (r) {
       if (STATE.status === "paid" && r.estado !== "оплачено") return false;
       if (STATE.status === "open" && r.estado === "оплачено") return false;
       return true;
@@ -303,14 +411,21 @@
   }
 
   function render() {
+    period();
     tiles();
     filters();
     var rows = visible();
     var list = document.getElementById("list");
-    list.innerHTML = rows.length
-      ? rows.map(rowHtml).join("")
-      : '<div class="empty">Здесь пока ничего нет. Загрузи документ на оплату в боте: ' +
-        "💶 Финансы → Оплата.</div>";
+    if (rows.length) {
+      list.innerHTML = rows.map(rowHtml).join("");
+      return;
+    }
+    var hint = STATE.month
+      ? "За " + monthLabel(STATE.month).toLowerCase() +
+        (STATE.local === "all" ? "" : " по этой локали") +
+        " документов нет. Полистай месяцы стрелками или нажми «Весь период»."
+      : "Здесь пока ничего нет. Загрузи документ на оплату в боте: 💶 Финансы → Оплата.";
+    list.innerHTML = '<div class="empty">' + esc(hint) + "</div>";
   }
 
   function fail(kind) {
@@ -325,7 +440,15 @@
   function boot(force) {
     load(force).then(function (data) {
       STATE.rows = data.rows || [];
+      STATE.locales = data.locales || [];
       STATE.viewer = data.viewer || {};
+      STATE.today = data.month || "";
+      if (STATE.month === null) {
+        // первый заход — открываем текущий месяц; если он пуст, показываем всё,
+        // чтобы страница не встретила пустым экраном
+        STATE.month = STATE.today;
+        if (!inMonth().length && STATE.rows.length) STATE.month = "";
+      }
       document.getElementById("loading").hidden = true;
       document.getElementById("who").textContent =
         (STATE.viewer.full ? "Все локали · " : "Мои документы · ") + "SUMSKAYA LINE";
@@ -336,6 +459,8 @@
       fail(e && e.message === "auth" ? "auth" : "net");
     });
   }
+
+  bindPeriod();
 
   document.getElementById("refresh").addEventListener("click", function () {
     document.getElementById("loading").hidden = false;

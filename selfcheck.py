@@ -6,10 +6,6 @@
 финблоком (см. README_fin.md). Смотрит на живой код прямо в памяти процесса,
 поэтому отвечает не «как должно быть», а как есть на сервере прямо сейчас.
 
-С 20.09 отсюда же подключается мост в Ritmo OPS (ritmo_bridge.py) — чтобы не
-перезаливать bot.py. Если файла ritmo_bridge.py на сервере нет, бот работает
-как раньше.
-
 Команда доступна патрону и фин. директору.
 """
 
@@ -20,8 +16,16 @@ import logging
 import os
 from datetime import datetime
 
-# через сколько секунд после старта возвращать кнопку «Меню»
-MENU_DELAY = int(os.environ.get("MENU_BUTTON_DELAY", "8") or 8)
+# через сколько секунд после старта возвращать кнопку «Меню».
+# Ставим несколько раз: модуль архива сотрудников ставит свою кнопку WebApp,
+# и кто последний — того и кнопка. Последняя попытка через две минуты после
+# старта — к этому моменту все модули точно отработали.
+try:
+    MENU_RETRIES = tuple(int(x) for x in
+                         os.environ.get("MENU_BUTTON_DELAY", "8,25,60,120").split(",") if x.strip())
+except Exception:
+    MENU_RETRIES = (8, 25, 60, 120)
+MENU_DELAY = MENU_RETRIES[0] if MENU_RETRIES else 8
 
 from aiogram.filters import Command
 from aiogram.types import Message, BotCommand
@@ -112,10 +116,21 @@ def build_checks():
         ("💶 Справочник поставщиков с правкой в боте",
          lambda: hasattr(sys.modules.get("fin_block"), "cb_prov_list")),
         ("🔍 Распознавание фактур включено (есть ключ Gemini)", _ocr_on),
-        ("🔗 Мост в Ritmo OPS подключён", _bridge_on),
-        ("🔗 Адрес Ritmo OPS задан (RITMO_URL)", _bridge_url),
-        ("🔗 Есть ключ хотя бы одной точки (RITMO_KEYS)", _bridge_keys),
+        ("🛡 Защита от лимита Google Sheets", _quota_on),
+        ("🛡 Шапки листов проверяются пакетом", _headers_on),
     ]
+
+
+def _quota_on() -> bool:
+    try:
+        from gspread.http_client import HTTPClient
+        return bool(getattr(HTTPClient.request, "_quota_guard", False))
+    except Exception:
+        return False
+
+
+def _headers_on() -> bool:
+    return bool(getattr(getattr(core, "ensure_headers", None), "_fin_guard", False))
 
 
 def _ocr_on() -> bool:
@@ -124,21 +139,6 @@ def _ocr_on() -> bool:
         return invoice_ocr.enabled()
     except Exception:
         return False
-
-
-def _bridge_on() -> bool:
-    return bool(getattr(sys.modules.get("ritmo_bridge"), "core", None)) and \
-        bool(getattr(getattr(core, "save_doc", None), "_ritmo_wrapped", False))
-
-
-def _bridge_url() -> bool:
-    m = sys.modules.get("ritmo_bridge")
-    return bool(m and m.ritmo_url())
-
-
-def _bridge_keys() -> bool:
-    m = sys.modules.get("ritmo_bridge")
-    return bool(m and m.keys())
 
 
 def _sheets_line() -> str:
@@ -184,6 +184,29 @@ def report() -> str:
     return "\n".join(lines)[:4000]
 
 
+async def menu_status(chat_id) -> str:
+    """Что за кнопка стоит слева от поля ввода прямо сейчас — по данным Telegram."""
+    names = {"commands": "«Меню» (команды) — как надо",
+             "web_app": "кнопка веб-приложения — она перебивает «Меню»",
+             "default": "по умолчанию"}
+    try:
+        b = await core.bot.get_chat_menu_button(chat_id=chat_id)
+        kind = getattr(b, "type", "?")
+        label = names.get(kind, kind)
+        text = getattr(b, "text", None)
+        if text:
+            label += f" — «{text}»"
+        line = f"Кнопка слева от поля ввода: {label}"
+    except Exception as ex:
+        line = f"Кнопку проверить не удалось: {type(ex).__name__}"
+    try:
+        cmds = await core.bot.get_my_commands()
+        line += "\nКоманды бота: " + (", ".join("/" + c.command for c in cmds) or "— пусто")
+    except Exception:
+        pass
+    return line
+
+
 async def cmd_version(m: Message):
     u = core.get_user(m.from_user.id)
     allowed = core.is_patron(u)
@@ -195,7 +218,12 @@ async def cmd_version(m: Message):
     if not allowed:
         return
     try:
-        await m.answer(report())
+        text = report()
+        try:
+            text += "\n\n" + await menu_status(m.chat.id)
+        except Exception:
+            pass
+        await m.answer(text[:4000])
     except Exception as ex:
         log.exception("отчёт не собрался: %s", ex)
         await m.answer(f"Не смог собрать отчёт: <code>{type(ex).__name__}: {ex}</code>")
@@ -203,12 +231,12 @@ async def cmd_version(m: Message):
 
 def _commands() -> list:
     """Список команд бота. Собираем по тому, какие модули реально подключены."""
-    cmds = [BotCommand(command="start", description="🔄 Обновить / открыть меню")]
-    if "ritmo_bridge" in sys.modules:
-        cmds.append(BotCommand(command="almacen", description="📦 Ritmo OPS — накладные"))
+    cmds = [BotCommand(command="start", description="🔄 Обновить / открыть меню"),
+            BotCommand(command="menu", description="🔘 Вернуть кнопку «Меню»"),
+            BotCommand(command="version", description="🧾 Что залито на сервер")]
     if "hr_web" in sys.modules:
-        cmds.append(BotCommand(command="archivo", description="👥 Архив сотрудников"))
-    cmds.append(BotCommand(command="version", description="🧾 Что залито на сервер"))
+        cmds.insert(1, BotCommand(command="archivo",
+                                  description="👥 Архив сотрудников"))
     return cmds
 
 
@@ -222,26 +250,8 @@ async def _on_startup():
     asyncio.create_task(_restore_menu_button())
 
 
-async def _restore_menu_button():
-    """Возвращаем кнопку «Меню» слева от поля ввода.
-
-    Модуль веб-архива сотрудников ставит на её место кнопку WebApp, и команды
-    становятся недоступны. Делаем это последним — с небольшой паузой, чтобы
-    перекрыть чужую установку, и только если MENU_BUTTON=commands (по умолчанию).
-    """
-    if os.environ.get("MENU_BUTTON", "commands").strip().lower() != "commands":
-        return
-    await asyncio.sleep(MENU_DELAY)
-    try:
-        from aiogram.types import MenuButtonCommands
-    except Exception as ex:
-        log.warning("кнопка меню недоступна в этой версии aiogram: %s", ex)
-        return
-    try:
-        await core.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
-    except Exception as ex:
-        log.warning("не смог поставить меню по умолчанию: %s", ex)
-    # у кого кнопка уже была подменена — правим персонально
+def _menu_ids() -> set:
+    """Чаты, где кнопку правим персонально: патроны и фин. директор."""
     ids = set()
     try:
         ids.update(core.patrons())
@@ -252,30 +262,89 @@ async def _restore_menu_button():
         ids.update(fin_block.findir_ids())
     except Exception:
         pass
+    return ids
+
+
+async def set_menu_button() -> int:
+    """Ставит кнопку «Меню» (команды) глобально и по чатам. Возвращает число чатов.
+
+    Кнопка показывается только если у бота есть команды, поэтому список команд
+    обновляем тем же заходом.
+    """
+    try:
+        from aiogram.types import MenuButtonCommands
+    except Exception as ex:
+        log.warning("кнопка меню недоступна в этой версии aiogram: %s", ex)
+        return 0
+    try:
+        await core.bot.set_my_commands(_commands())
+    except Exception as ex:
+        log.warning("не смог обновить список команд: %s", ex)
+    try:
+        await core.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+    except Exception as ex:
+        log.warning("не смог поставить меню по умолчанию: %s", ex)
+    ids = _menu_ids()
     for uid in ids:
         try:
             await core.bot.set_chat_menu_button(chat_id=uid,
                                                 menu_button=MenuButtonCommands())
         except Exception as ex:
             log.warning("кнопка меню для %s не поставлена: %s", uid, ex)
-    log.info("selfcheck: кнопка «Меню» восстановлена для %d чатов", len(ids))
+    return len(ids)
+
+
+async def _restore_menu_button():
+    """Возвращаем кнопку «Меню» слева от поля ввода.
+
+    Модуль веб-архива сотрудников ставит на её место кнопку WebApp, и команды
+    становятся недоступны. Побеждает тот, кто поставил последним, а порядок
+    запуска модулей зависит от того, как быстро отвечают таблицы. Поэтому
+    ставим несколько раз с растущей паузой — последняя попытка заведомо позже
+    всех остальных модулей. Выключается переменной MENU_BUTTON.
+    """
+    if os.environ.get("MENU_BUTTON", "commands").strip().lower() != "commands":
+        return
+    prev = 0
+    for delay in MENU_RETRIES:
+        await asyncio.sleep(max(delay - prev, 0))
+        prev = delay
+        try:
+            n = await set_menu_button()
+            log.info("selfcheck: кнопка «Меню» поставлена (через %d сек, чатов: %d)", delay, n)
+        except Exception as ex:
+            log.warning("selfcheck: попытка вернуть меню не удалась: %s", ex)
+
+
+async def cmd_menu(m: Message):
+    """Ручной возврат кнопки «Меню», если её опять перебили."""
+    u = core.get_user(m.from_user.id)
+    allowed = core.is_patron(u)
+    try:
+        import fin_block
+        allowed = allowed or fin_block.is_findir(u, m.from_user.id)
+    except Exception:
+        pass
+    if not allowed:
+        return
+    try:
+        await set_menu_button()
+    except Exception as ex:
+        await m.answer(f"Не получилось: <code>{type(ex).__name__}: {ex}</code>")
+        return
+    await m.answer("Кнопка «Меню» возвращена.\n\n"
+                   "Если слева от поля ввода её всё ещё нет — закрой и открой чат "
+                   "с ботом: Telegram показывает кнопку по своей памяти и обновляет "
+                   "её при входе в чат.")
 
 
 def setup(dp, core_module):
     global core
     core = core_module
     dp.message.register(cmd_version, Command("version"))
+    dp.message.register(cmd_menu, Command("menu"))
     try:
         dp.startup.register(_on_startup)
     except Exception as ex:
         log.warning("startup-хук недоступен: %s", ex)
-    log.info("selfcheck подключён: /version")
-
-    # 🔗 Мост в Ritmo OPS. Свой try: если модуль сломан, /version и бот работают.
-    try:
-        import ritmo_bridge
-        ritmo_bridge.setup(dp, core_module)
-    except ModuleNotFoundError:
-        log.info("ritmo_bridge.py не залит — фактуры в Ritmo OPS не отправляются")
-    except Exception as ex:
-        log.error("ritmo_bridge не подключён: %s", ex, exc_info=True)
+    log.info("selfcheck подключён: /version, /menu")

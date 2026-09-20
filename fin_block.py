@@ -181,8 +181,27 @@ def new_id() -> str:
     return "F" + core.now_local().strftime("%y%m%d%H%M%S")
 
 
+# Локали финблока: четыре заведения из ядра плюс офис. Офис заводим здесь,
+# а не в bot.py, чтобы не трогать чужие блоки — для HR и склада его нет,
+# а счета на оплату приходят и по офису (аренда, связь, консультанты).
+EXTRA_LOCALES = {
+    "office": {"name": "Oficina", "emoji": "🏢", "tag": "OFICINA"},
+}
+
+
+def locales() -> dict:
+    """Все локали, по которым финблок принимает документы."""
+    out = {}
+    try:
+        out.update(core.LOCALES)
+    except Exception:
+        pass
+    out.update(EXTRA_LOCALES)
+    return out
+
+
 def loc_label(code: str) -> str:
-    l = core.LOCALES.get(code)
+    l = locales().get(code)
     return f"{l['emoji']} {l['name']}" if l else code
 
 
@@ -448,7 +467,7 @@ async def _root_screen(c: CallbackQuery, u):
                 [btn("🌐 Статус моих платежей", "fin:web")]]))
         return
 
-    rows_ = [[btn(f"{loc_label(code)}", f"fin:l:{code}")] for code in core.LOCALES]
+    rows_ = [[btn(f"{loc_label(code)}", f"fin:l:{code}")] for code in locales()]
     rows_.append([btn("💳 Оплата — загрузить документ", "fin:up")])
     try:
         n_prov = len(proveedores())
@@ -525,7 +544,7 @@ async def on_doc(m: Message):
         "chat_id": m.chat.id, "msg_id": m.message_id,
         "author": m.from_user.full_name, "text": (m.caption or "")[:500],
     }
-    rows_ = [[btn(loc_label(code), f"fin:loc:{code}")] for code in core.LOCALES]
+    rows_ = [[btn(loc_label(code), f"fin:loc:{code}")] for code in locales()]
     rows_.append([btn("❌ Отмена", "fin:cancel")])
     await m.answer(f"Принял: <b>{e(fname)}</b>\n\nВ какую локаль?",
                    reply_markup=InlineKeyboardMarkup(inline_keyboard=rows_))
@@ -544,7 +563,7 @@ async def cb_pick_loc(c: CallbackQuery):
         await c.answer("Загрузка устарела, начни заново", show_alert=True)
         return
     loc = c.data.split(":")[2]
-    if loc not in core.LOCALES:
+    if loc not in locales():
         await c.answer()
         return
     p["loc"] = loc
@@ -799,7 +818,7 @@ async def cb_loc_menu(c: CallbackQuery):
         await deny(c)
         return
     loc = c.data.split(":")[2]
-    if loc not in core.LOCALES:
+    if loc not in locales():
         await c.answer()
         return
     core.nav_push(c.from_user.id, c.data)
@@ -855,7 +874,7 @@ async def cb_unpaid(c: CallbackQuery):
         await deny(c)
         return
     loc = c.data.split(":")[2]
-    if loc not in core.LOCALES:
+    if loc not in locales():
         await c.answer()
         return
     await _list_screen(c, loc, UNPAID, "🧾 <b>Неоплаченные</b>", "Пусто — всё оплачено.")
@@ -867,7 +886,7 @@ async def cb_paid(c: CallbackQuery):
         await deny(c)
         return
     loc = c.data.split(":")[2]
-    if loc not in core.LOCALES:
+    if loc not in locales():
         await c.answer()
         return
     await _list_screen(c, loc, PAID_QUEUE + (ST_PAID,), "✅ <b>Оплаченные</b>",
@@ -880,7 +899,7 @@ async def cb_archive(c: CallbackQuery):
         await deny(c)
         return
     loc = c.data.split(":")[2]
-    if loc not in core.LOCALES:
+    if loc not in locales():
         await c.answer()
         return
     await _list_screen(c, loc, None, "🗂 <b>Архив фактур</b>", "Архив пуст.")
@@ -1240,8 +1259,8 @@ async def cb_delete_do(c: CallbackQuery):
         log.exception("не смогла удалить строку %s: %s", fid, ex)
         await c.answer("Таблица не дала удалить строку", show_alert=True)
         return
-    c2 = c.model_copy(update={"data": f"fin:unp:{loc}"}) if loc in core.LOCALES else c
-    if loc in core.LOCALES:
+    c2 = c.model_copy(update={"data": f"fin:unp:{loc}"}) if loc in locales() else c
+    if loc in locales():
         await cb_unpaid(c2)
     else:
         await _root_screen(c, u)
@@ -1844,7 +1863,7 @@ async def cb_remesa(c: CallbackQuery):
         await deny(c)
         return
     loc = c.data.split(":")[2]
-    if loc not in core.LOCALES:
+    if loc not in locales():
         await c.answer()
         return
     core.nav_push(c.from_user.id, c.data)

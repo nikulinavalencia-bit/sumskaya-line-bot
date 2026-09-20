@@ -118,14 +118,51 @@ def _viewer(uid: int) -> dict:
     return {"uid": uid, "name": str(u.get("Имя", "")).strip(), "full": full}
 
 
+def _month_of(r: dict) -> str:
+    """Месяц документа в виде ГГГГ-ММ — по дате фактуры, иначе по дате загрузки.
+
+    Так в отчёте за сентябрь окажется сентябрьская фактура, даже если её
+    занесли в бот в начале октября.
+    """
+    for key in ("Дата фактуры", "Дата"):
+        s = str(r.get(key, "")).strip()
+        if not s:
+            continue
+        head = s.split()[0].replace("/", ".").replace("-", ".")
+        parts = [p for p in head.split(".") if p]
+        if len(parts) >= 3:
+            d, m, y = parts[0], parts[1], parts[2]
+            if len(parts[0]) == 4:          # гггг.мм.дд
+                y, m, d = parts[0], parts[1], parts[2]
+            if len(y) == 2:
+                y = "20" + y
+            if y.isdigit() and m.isdigit():
+                return f"{int(y):04d}-{int(m):02d}"
+    return ""
+
+
+def _locales_list() -> list:
+    """Все подразделения — чтобы кнопки на странице были всегда, даже по
+    локали, где документов ещё нет."""
+    out = []
+    try:
+        for code, l in _fin().locales().items():
+            out.append({"code": code,
+                        "label": f"{l.get('emoji', '')} {l.get('name', code)}".strip()})
+    except Exception as ex:
+        log.warning("не смог собрать список локалей: %s", ex)
+    return out
+
+
 def _rows_sync() -> list:
     fin = _fin()
     out = []
     for _, r in fin.facturas(force=True):
         loc = str(r.get("Локаль", "")).strip()
-        l = core.LOCALES.get(loc, {})
+        l = fin.locales().get(loc, {})
         total = fin.parse_amount(r.get("Total"))
         out.append({
+            "mes": _month_of(r),
             "id": str(r.get("ID", "")).strip(),
             "fecha": str(r.get("Дата", "")).strip(),
             "hora": str(r.get("Время", "")).strip(),
@@ -203,6 +240,8 @@ def add_routes(app):
             rows = [r for r in rows if r["autor_id"] == str(uid)]
         payload = {
             "rows": rows,
+            "locales": _locales_list(),
+            "month": core.now_local().strftime("%Y-%m"),
             "viewer": {"name": v["name"], "full": v["full"]},
             "updated": core.now_local().strftime("%d.%m.%Y %H:%M"),
         }
