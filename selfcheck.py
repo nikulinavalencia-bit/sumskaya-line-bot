@@ -6,8 +6,8 @@
 финблоком (см. README_fin.md). Смотрит на живой код прямо в памяти процесса,
 поэтому отвечает не «как должно быть», а как есть на сервере прямо сейчас.
 
-С 19.09 отсюда же подключается товарный блок (stock_block.py) — чтобы не
-перезаливать bot.py. Если файла stock_block.py на сервере нет, бот работает
+С 20.09 отсюда же подключается мост в Ritmo OPS (ritmo_bridge.py) — чтобы не
+перезаливать bot.py. Если файла ritmo_bridge.py на сервере нет, бот работает
 как раньше.
 
 Команда доступна патрону и фин. директору.
@@ -112,9 +112,9 @@ def build_checks():
         ("💶 Справочник поставщиков с правкой в боте",
          lambda: hasattr(sys.modules.get("fin_block"), "cb_prov_list")),
         ("🔍 Распознавание фактур включено (есть ключ Gemini)", _ocr_on),
-        ("📦 Товарный блок подключён (приходные накладные)", _stock_on),
-        ("📦 Веб-страница накладных /almacen", _stock_web_on),
-        ("🔌 Syrve настроен хотя бы для одной локали", _syrve_on),
+        ("🔗 Мост в Ritmo OPS подключён", _bridge_on),
+        ("🔗 Адрес Ritmo OPS задан (RITMO_URL)", _bridge_url),
+        ("🔗 Есть ключ хотя бы одной точки (RITMO_KEYS)", _bridge_keys),
     ]
 
 
@@ -126,22 +126,19 @@ def _ocr_on() -> bool:
         return False
 
 
-def _stock_on() -> bool:
-    m = sys.modules.get("stock_block")
-    return bool(getattr(m, "core", None)) and \
-        bool(getattr(getattr(core, "save_doc", None), "_stock_wrapped", False))
+def _bridge_on() -> bool:
+    return bool(getattr(sys.modules.get("ritmo_bridge"), "core", None)) and \
+        bool(getattr(getattr(core, "save_doc", None), "_ritmo_wrapped", False))
 
 
-def _stock_web_on() -> bool:
-    return bool(getattr(sys.modules.get("stock_web"), "core", None))
+def _bridge_url() -> bool:
+    m = sys.modules.get("ritmo_bridge")
+    return bool(m and m.ritmo_url())
 
 
-def _syrve_on() -> bool:
-    try:
-        import syrve_api
-        return any(syrve_api.enabled(c) for c in getattr(core, "LOCALES", {}))
-    except Exception:
-        return False
+def _bridge_keys() -> bool:
+    m = sys.modules.get("ritmo_bridge")
+    return bool(m and m.keys())
 
 
 def _sheets_line() -> str:
@@ -150,10 +147,8 @@ def _sheets_line() -> str:
     except Exception as ex:
         return f"Листы таблицы: не смог прочитать ({type(ex).__name__})"
     fin = [t for t in titles if t.startswith("FIN_")]
-    stk = [t for t in titles if t.startswith("STK_")]
     return (f"Листов в таблице: {len(titles)}\n"
-            f"Листы финблока: {', '.join(fin) if fin else '— ещё не созданы'}\n"
-            f"Листы склада: {', '.join(stk) if stk else '— ещё не созданы'}")
+            f"Листы финблока: {', '.join(fin) if fin else '— ещё не созданы'}")
 
 
 def report() -> str:
@@ -209,7 +204,7 @@ async def cmd_version(m: Message):
 def _commands() -> list:
     """Список команд бота. Собираем по тому, какие модули реально подключены."""
     cmds = [BotCommand(command="start", description="🔄 Обновить / открыть меню")]
-    if "stock_block" in sys.modules:
+    if "ritmo_bridge" in sys.modules:
         cmds.append(BotCommand(command="almacen", description="📦 Ritmo OPS — накладные"))
     if "hr_web" in sys.modules:
         cmds.append(BotCommand(command="archivo", description="👥 Архив сотрудников"))
@@ -276,11 +271,11 @@ def setup(dp, core_module):
         log.warning("startup-хук недоступен: %s", ex)
     log.info("selfcheck подключён: /version")
 
-    # 📦 Товарный блок. Свой try: если модуль сломан, /version и бот работают.
+    # 🔗 Мост в Ritmo OPS. Свой try: если модуль сломан, /version и бот работают.
     try:
-        import stock_block
-        stock_block.setup(dp, core_module)
+        import ritmo_bridge
+        ritmo_bridge.setup(dp, core_module)
     except ModuleNotFoundError:
-        log.info("stock_block.py не залит — товарный блок выключен")
+        log.info("ritmo_bridge.py не залит — фактуры в Ritmo OPS не отправляются")
     except Exception as ex:
-        log.error("stock_block не подключён: %s", ex, exc_info=True)
+        log.error("ritmo_bridge не подключён: %s", ex, exc_info=True)
