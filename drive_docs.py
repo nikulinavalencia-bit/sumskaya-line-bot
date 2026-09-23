@@ -149,18 +149,47 @@ def tree(force=False) -> list:
 def _norm(s) -> str:
     s = unicodedata.normalize("NFD", str(s or "").lower())
     s = "".join(c for c in s if unicodedata.category(c) != "Mn")
-    return " ".join(s.replace("_", " ").replace("-", " ").replace(".", " ").split())
+    return " ".join(s.replace("_", " ").replace("-", " ").replace(".", " ")
+                     .replace(",", " ").split())
+
+
+def _similar(a: str, b: str) -> bool:
+    """Слово похоже на слово: та же опечатка/транслитерация — «Valeria»/
+    «Valeriia», «Alaiev»/«Alaev», «Khardanov»/«Kardanov»."""
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > 2:
+        return False
+    from difflib import SequenceMatcher
+    return SequenceMatcher(None, a, b).ratio() >= 0.82
+
+
+def match_score(want: set, have: set) -> int:
+    """Сколько слов из want нашли точное или близкое совпадение в have."""
+    left = set(have)
+    score = 0
+    for w in want:
+        if w in left:
+            left.discard(w)
+            score += 1
+            continue
+        hit = next((h for h in left if _similar(w, h)), None)
+        if hit:
+            left.discard(hit)
+            score += 1
+    return score
 
 
 def folder_for(name: str):
-    """Папка сотрудника по ФИО: совпадение по словам имени и фамилии."""
+    """Папка сотрудника по ФИО: совпадение по словам имени и фамилии
+    (терпит запятую и небольшую опечатку/транслитерацию)."""
     want = {w for w in _norm(name).split() if len(w) > 2}
     if not want:
         return None
     best, score = None, 0
     for f in tree():
         have = {w for w in _norm(f["name"]).split() if len(w) > 2}
-        s = len(want & have)
+        s = match_score(want, have)
         if s > score:
             best, score = f, s
     return best if score >= 2 or (score == 1 and len(want) == 1) else None

@@ -81,7 +81,8 @@ DATE_FIELDS = {"alta": "alta", "baja": "baja"}   # пишутся в три ко
 def _norm(s) -> str:
     s = unicodedata.normalize("NFD", str(s or "").lower())
     s = "".join(c for c in s if unicodedata.category(c) != "Mn")
-    return " ".join(s.replace("_", " ").replace("-", " ").replace(".", " ").split())
+    return " ".join(s.replace("_", " ").replace("-", " ").replace(".", " ")
+                     .replace(",", " ").split())
 
 
 def _norm_date(v) -> str:
@@ -260,6 +261,8 @@ def audit() -> dict:
     _, headers, cols, _ = _registro_ctx()
     key_cols = [c for c in ("nie", "alta", "puesto", "horas", "iban", "tel", "email") if c in cols]
 
+    import drive_docs as _dd
+
     matched, no_person = [], []
     used = set()
     for f in folders:
@@ -267,7 +270,7 @@ def audit() -> dict:
         best, score = None, 0
         for p in people:
             have = {w for w in _norm(p["name"]).split() if len(w) > 2}
-            s = len(want & have)
+            s = _dd.match_score(want, have)
             if s > score:
                 best, score = p, s
         if best and (score >= 2 or (score == 1 and len(want) == 1)):
