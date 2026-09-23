@@ -11,8 +11,13 @@ Ritmo OPS — отдельный сервис (свой сайт, своя ба�
      Несколько фото одним альбомом = одна накладная.
   3. Дальше всё происходит в Ritmo OPS: распознавание, сопоставление, Syrve.
 
+Списания: сотрудник пишет обычным текстом в группу Bajas своей локали
+(«2 кг помидоров испортились»). Мост пересылает это сообщение в Ritmo OPS,
+там из сообщений за день собирается один акт списания, а вечером он уходит
+в Syrve сам — если у точки включено «Выгружать готовые акты списания сами».
+
 Для локалей, подключённых к Ritmo OPS, фактуры в Билз больше не пересылаются.
-Списания (baja) идут в Билз как раньше.
+Фото и файлы в группе списаний идут в Билз как раньше.
 
 Подключается сам из selfcheck.py — bot.py не меняется.
 
@@ -35,7 +40,7 @@ from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKe
 
 log = logging.getLogger("ritmo_bridge")
 
-VERSION = "ritmo_bridge 1.0 · 20.09.2026"
+VERSION = "ritmo_bridge 1.1 · 23.09.2026"
 ALBUM_WAIT = 6          # сек — ждём остальные фото альбома
 MARK_OK = "🔗 Ritmo OPS"        # отметка в листе Docs вместо «отправлено в Билз»
 MARK_BAD = "⚠️ Ritmo OPS не принял"
@@ -46,7 +51,8 @@ _routes_done = False
 _meta = {}              # (chat_id, msg_id) -> {"mg": media_group_id, "mime": ...}
 _albums = {}            # media_group_id -> {"items": [...], "task": Task}
 _last_saved = {"loc": "", "typ": ""}
-_stats = {"sent": 0, "failed": 0, "last_error": ""}
+_seen_wo = set()          # сообщения списаний, уже отправленные в Ritmo OPS
+_stats = {"sent": 0, "failed": 0, "wo": 0, "wo_failed": 0, "last_error": ""}
 
 
 # ---------------- НАСТРОЙКИ ----------------
@@ -74,16 +80,17 @@ def enabled_for(loc: str) -> bool:
 
 # ---------------- ОТПРАВКА В RITMO OPS ----------------
 
-def _post(loc: str, files: list, author: str, ref: str) -> dict:
+def _post(loc: str, files: list, author: str, ref: str, extra: dict = None) -> dict:
     """files: [(bytes, mime, name)] — синхронно, из потока."""
     payload = [("files", (name, data, mime)) for data, mime, name in files]
     last = ""
     for attempt in range(3):
         try:
+            data = {"author": author, "ref": ref, "source": "telegram"}
+            data.update(extra or {})
             r = requests.post(f"{ritmo_url()}/api/intake",
                               headers={"X-Ritmo-Key": keys()[loc]},
-                              data={"author": author, "ref": ref, "source": "telegram"},
-                              files=payload, timeout=TIMEOUT)
+                              data=data, files=payload or None, timeout=TIMEOUT)
             if r.status_code == 200:
                 return r.json()
             last = f"HTTP {r.status_code}: {r.text[:200]}"
@@ -142,6 +149,58 @@ async def _mark(row, mark: str):
         log.warning("ritmo_bridge: отметка в Docs не проставлена: %s", ex)
 
 
+# ---------------- СПИСАНИЯ: ТЕКСТ ИЗ ГРУПП ----------------
+
+async def send_writeoff(loc: str, text: str, author: str, ref: str) -> dict:
+    """Одно сообщение из группы списаний. Ritmo OPS собирает из них акт дня."""
+    res = await asyncio.to_thread(_post, loc, [], author, ref, {"kind": "writeoff", "text": text})
+    if res.get("ok"):
+        _stats["wo"] += 1
+    else:
+        _stats["wo_failed"] += 1
+        _stats["last_error"] = str(res.get("error"))[:300]
+        log.error("ritmo_bridge: списание не ушло в Ritmo OPS: %s", res.get("error"))
+    return res
+
+
+def _wo_text(m) -> str:
+    """Текст сообщения, если его стоит считать списанием."""
+    t = (getattr(m, "text", "") or getattr(m, "caption", "") or "").strip()
+    if not t or t.startswith("/") or len(t) < 3:
+        return ""
+    for a in ("photo", "document", "video", "voice", "audio"):
+        if getattr(m, a, None):
+            return ""        # фото/файл в группе списаний — как раньше, в Билз
+    return t[:2000]
+
+
+async def _writeoff_watch(m):
+    """Сообщение в группе списаний → в Ritmo OPS, в акт сегодняшнего дня."""
+    if not m.chat or m.chat.type not in ("group", "supergroup"):
+        return
+    gmap = getattr(core, "group_map", None)
+    gm = gmap(m.chat.id) if callable(gmap) else None
+    if not gm:
+        return
+    loc, typ = gm
+    if typ != "baja" or not enabled_for(loc):
+        return
+    text = _wo_text(m)
+    if not text:
+        return
+    author = m.from_user.full_name if m.from_user else "—"
+    ref = f"tg:{m.chat.id}:{m.message_id}"
+    res = await send_writeoff(loc, text, author, ref)
+    if not res.get("ok"):
+        for pid in core.patrons():
+            try:
+                await core.bot.send_message(
+                    pid, f"⚠️ Списание из группы ({loc}) не ушло в Ritmo OPS:\n"
+                         f"<code>{core.html_lib.escape(str(res.get('error'))[:300])}</code>")
+            except Exception:
+                pass
+
+
 # ---------------- ПЕРЕХВАТ ФАКТУР ИЗ ГРУПП ----------------
 
 async def _observe(handler, event, data):
@@ -161,6 +220,17 @@ async def _observe(handler, event, data):
                     _meta.pop(k, None)
     except Exception:
         pass
+    # списания приходят обычным текстом, а bot.py такие сообщения не сохраняет —
+    # поэтому ловим их здесь, до обработчиков, и ничего в боте не меняем
+    try:
+        key = (str(event.chat.id), str(event.message_id)) if event.chat else None
+        if key and key not in _seen_wo:
+            _seen_wo.add(key)
+            if len(_seen_wo) > 4000:
+                _seen_wo.clear()
+            asyncio.get_running_loop().create_task(_writeoff_watch(event))
+    except Exception as ex:
+        log.warning("ritmo_bridge: списание не поставлено в отправку: %s", ex)
     return await handler(event, data)
 
 
@@ -277,7 +347,8 @@ def status_text() -> str:
     if unknown:
         lines.append(f"⚠️ Неизвестные коды локалей: {', '.join(unknown)} "
                      f"(нужно: {', '.join(core.LOCALES)})")
-    lines.append(f"Отправлено с запуска: {_stats['sent']}, не ушло: {_stats['failed']}")
+    lines.append(f"Фактур отправлено с запуска: {_stats['sent']}, не ушло: {_stats['failed']}")
+    lines.append(f"Сообщений списания: {_stats['wo']}, не ушло: {_stats['wo_failed']}")
     if _stats["last_error"]:
         lines.append(f"Последняя ошибка: <code>{core.html_lib.escape(_stats['last_error'])}</code>")
     lines.append("")
