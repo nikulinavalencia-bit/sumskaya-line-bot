@@ -75,6 +75,15 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 .err{color:var(--red);padding:30px 0}
 a{color:var(--acc)}
 .pager{display:flex;gap:6px;align-items:center;justify-content:flex-end;margin-top:10px}
+.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-top:12px}
+.form label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)}
+.form input,.form select,.form textarea{border:1px solid var(--line);background:var(--card);border-radius:8px;padding:8px 9px;min-width:0;font:inherit;color:inherit}
+.form .wide{grid-column:1/-1}
+.req::after{content:" *";color:var(--red)}
+.ok{background:var(--acc-soft);color:var(--acc);padding:8px 10px;border-radius:8px;margin-top:10px}
+.bad{background:var(--red-soft);color:var(--red);padding:8px 10px;border-radius:8px;margin-top:10px}
+.docsec{margin-top:14px}
+.docsec h3{font-size:13px;margin:0 0 6px;color:var(--muted);font-weight:600}
 </style>
 </head>
 <body>
@@ -90,6 +99,12 @@ a{color:var(--acc)}
     </div>
   </header>
 
+  <div class="seg" id="tabs" style="margin-bottom:14px">
+    <button data-t="emp" class="on">👥 Сотрудники</button>
+    <button data-t="sol">📝 Заявки</button>
+  </div>
+
+  <div id="tabEmp">
   <div class="card" style="margin-bottom:14px">
     <div class="row" style="margin-bottom:10px">
       <div class="chips" id="locChips"></div>
@@ -138,6 +153,25 @@ a{color:var(--acc)}
   </div>
 
 </div>
+  </div><!-- /tabEmp -->
+
+  <div id="tabSol" hidden>
+    <div class="card" style="margin-bottom:14px">
+      <h2>Новая заявка</h2>
+      <div class="chips" id="solKinds">
+        <span class="chip" data-k="alta">🟢 Alta — новый сотрудник</span>
+        <span class="chip" data-k="baja">🔴 Baja — увольнение</span>
+        <span class="chip" data-k="medico">🏥 Seguro médico</span>
+        <span class="chip" data-k="cambio">🔁 Cambio — изменение контракта</span>
+      </div>
+      <div id="solForm"></div>
+    </div>
+    <div class="card">
+      <div class="row"><h2 style="margin:0">Отправленные заявки</h2>
+        <button class="btn" id="solReload">↻ Обновить</button></div>
+      <div class="tbl-wrap"><table id="solList"></table></div>
+    </div>
+  </div>
 
 <dialog id="dlg"><div class="dlg" id="dlgBody"></div></dialog>
 
@@ -147,9 +181,13 @@ const LOC_NAME = {"REINA":"Reina","FRANCIA":"Francia","BAKERY":"Bakery","BOI BOI
 const PAGE = 50;
 let ALL = [], META = {};
 try{ if(window.Telegram && Telegram.WebApp){ Telegram.WebApp.ready(); Telegram.WebApp.expand(); } }catch(e){}
+const AUTH = () => {
+  const tg = window.Telegram && Telegram.WebApp;
+  return (tg && tg.initData) ? {"X-TG-Init-Data": tg.initData} : {};
+};
 const TAG = r => r.estado==="activo" ? '<span class="tag a">работает</span>'
   : r.estado==="proceso" ? `<span class="tag p">оформление</span>` : '<span class="tag b">уволен(а)</span>';
-const S = {locs:new Set(), estado:"activo", q:"", dep:"", puesto:"", sex:"", asof:"", altaFrom:"", altaTo:"", sort:"name", dir:1, page:0};
+const S = {tab:"emp", locs:new Set(), estado:"activo", q:"", dep:"", puesto:"", sex:"", asof:"", altaFrom:"", altaTo:"", sort:"name", dir:1, page:0};
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmt = iso => iso ? iso.split("-").reverse().join(".") : "";
@@ -158,13 +196,16 @@ const norm = s => String(s||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/
 async function load(force){
   $("meta").textContent = "Загрузка Registro…";
   try{
-    const tg = window.Telegram && Telegram.WebApp;
-    const hdr = (tg && tg.initData) ? {"X-TG-Init-Data": tg.initData} : {};
-    const r = await fetch("/hr/api/data" + (force ? "?force=1" : ""), {credentials:"same-origin", headers:hdr});
+    const r = await fetch("/hr/api/data" + (force ? "?force=1" : ""), {credentials:"same-origin", headers:AUTH()});
     if(r.status === 401){ document.body.innerHTML = '<div class="wrap"><h2>Нужен вход</h2><p>Откройте архив из бота: HR → «🌐 Архив сотрудников» или команда <b>/archivo</b>. В браузере вход потом помнится 90 дней.</p></div>'; return; }
     const d = await r.json();
     if(d.error) throw new Error(d.error);
     ALL = d.records; META = d;
+    if(d.role !== "patron"){
+      document.querySelector('#tabs button[data-t="emp"]').hidden = true;
+      $("meta").textContent = `Заявки · ${esc(d.me||"")}`;
+      setTab("sol"); return;
+    }
     let note = `Registro · ${ALL.length} записей · обновлено ${d.updated}`;
     if(d.columns_missing && d.columns_missing.length) note += ` · не найдены колонки: ${d.columns_missing.join(", ")}`;
     $("meta").textContent = note;
@@ -297,8 +338,11 @@ function card(r){
     <button class="btn" onclick="dlg.close()">✕</button></div>
     ${TAG(r)}
     <span class="sub">· ${r.row>0 ? "строка "+r.row+" в Registro" : "в чек-листе HR, этап: "+esc(r.etapa||"")}</span>
+    <div class="row" style="margin-top:10px"><button class="btn primary" id="docsBtn">📁 Документы сотрудника</button></div>
+    <div id="docsBox"></div>
     <dl>${f.filter(x=>x[1]).map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}
     ${r.contrato?`<dt>Контракт</dt><dd><a href="${esc(r.contrato)}" target="_blank" rel="noopener">папка на Диске ↗</a></dd>`:""}</dl>`;
+  $("docsBtn").onclick = ()=>showDocs(r.name);
   $("dlg").showModal();
 }
 
@@ -328,6 +372,156 @@ $("pivot").onclick = e=>{
 };
 $("pager").onclick = e=>{const b=e.target.closest("button"); if(!b) return; S.page+=+b.dataset.p; render();};
 $("dlg").addEventListener("click", e=>{ if(e.target.id==="dlg") $("dlg").close(); });
+// ---------- вкладки ----------
+function setTab(t){
+  S.tab = t;
+  $("tabEmp").hidden = t !== "emp";
+  $("tabSol").hidden = t !== "sol";
+  document.querySelectorAll("#tabs button").forEach(b=>b.classList.toggle("on", b.dataset.t===t));
+  document.getElementById("reset").hidden = t !== "emp";
+  if(t === "sol") loadSol();
+}
+$("tabs").onclick = e=>{const b=e.target.closest("button"); if(b) setTab(b.dataset.t);};
+
+// ---------- формы заявок ----------
+const SEL = {locales:[], puestos:[], horas:[], periodos:[], motivos:[]};
+const FORMS = {
+  alta: {title:"🟢 Alta — новый сотрудник", fields:[
+    ["local","Local","sel:locales",1],["nombre","Nombre","text",1],["apellido","Apellido","text",1],
+    ["nacimiento","Fecha de nacimiento","date",0],["nie","NIE/TIE","text",1],
+    ["domicilio","Domicilio","text",1],["cp","Código postal","text",0],
+    ["iban","IBAN","text",1],["email","Correo electrónico","text",1],["telefono","Teléfono","text",1],
+    ["nss","Numero seguridad social","text",1],["puesto","Título profesional","sel:puestos",1],
+    ["horas","Número de horas","sel:horas",1],["inicio","Fecha de inicio","date",1]]},
+  baja: {title:"🔴 Baja — увольнение", fields:[
+    ["nombre","Nombre y Apellidos","text",1],["local","Local","sel:locales",1],
+    ["puesto","Puesto","sel:puestos",0],["responsable","Persona responsable","text",0],
+    ["fecha","Último día de trabajo","date",1],["periodo","Período de despido","sel:periodos",1],
+    ["motivo","Motivo del despido","sel:motivos",1],["vacaciones","Vacaciones, дней","text",0]]},
+  medico: {title:"🏥 Seguro médico", fields:[
+    ["nombre","Nombre y Apellidos","text",1],["local","Local","sel:locales",1],
+    ["puesto","Título profesional","sel:puestos",0],["nacimiento","Fecha de nacimiento","date",0],
+    ["nie","NIE/TIE","text",1],["domicilio","Domicilio / Código postal","text",0],
+    ["iban","IBAN","text",0],["email","Correo electrónico","text",0],
+    ["telefono","Teléfono","text",0],["nss","Numero seguridad social","text",0]]},
+  cambio: {title:"🔁 Cambio — изменение контракта", fields:[
+    ["nombre","Nombre y Apellidos","text",1],["responsable","Persona responsable","text",0],
+    ["local_antes","Local antes","sel:locales",1],["local_despues","Local después","sel:locales",0],
+    ["horas_antes","Horas antes","sel:horas",0],["horas_despues","Horas después","sel:horas",0],
+    ["puesto_antes","Puesto antes","sel:puestos",0],["puesto_despues","Puesto después","sel:puestos",0],
+    ["fecha","С какой даты","date",1]]},
+};
+
+async function solMeta(){
+  if(SEL.locales.length) return;
+  try{
+    const r = await fetch("/hr/api/sol/meta",{credentials:"same-origin",headers:AUTH()});
+    const d = await r.json(); Object.assign(SEL, d);
+  }catch(e){}
+}
+
+function solForm(kind){
+  const f = FORMS[kind];
+  const fld = ([k,l,t,req]) => {
+    const cls = req ? ' class="req"' : "";
+    if(t.startsWith("sel:")){
+      const list = SEL[t.slice(4)] || [];
+      return `<label><span${cls}>${esc(l)}</span><select data-f="${k}"><option value=""></option>${
+        list.map(v=>`<option>${esc(v)}</option>`).join("")}</select></label>`;
+    }
+    return `<label><span${cls}>${esc(l)}</span><input data-f="${k}" type="${t==="date"?"date":"text"}"></label>`;
+  };
+  $("solForm").innerHTML = `<h3 style="margin:14px 0 0">${f.title}</h3>
+    <div class="form">${f.fields.map(fld).join("")}
+      <label class="wide"><span>Комментарий</span><input data-f="comentario" placeholder="необязательно"></label></div>
+    <div class="row" style="margin-top:12px"><span class="sub">Поля со ★ обязательны</span>
+      <button class="btn primary" id="solSend">Отправить заявку</button></div>
+    <div id="solMsg"></div>`;
+  $("solSend").onclick = ()=>solSend(kind);
+}
+
+async function solSend(kind){
+  const datos = {};
+  $("solForm").querySelectorAll("[data-f]").forEach(el=>{
+    let v = el.value.trim();
+    if(el.type === "date" && v) v = v.split("-").reverse().join(".");
+    if(v) datos[el.dataset.f] = v;
+  });
+  const btn = $("solSend"); btn.disabled = true; btn.textContent = "Отправляю…";
+  try{
+    const r = await fetch("/hr/api/sol/create",{method:"POST",credentials:"same-origin",
+      headers:Object.assign({"Content-Type":"application/json"},AUTH()),
+      body:JSON.stringify({tipo:kind,datos})});
+    const d = await r.json();
+    if(d.error){ $("solMsg").innerHTML = `<div class="bad">${esc(d.error)}</div>`; }
+    else{
+      $("solMsg").innerHTML = `<div class="ok">Заявка отправлена${d.foto?". Бот попросит в Telegram фото NIE/TIE":""}.</div>`;
+      $("solForm").querySelectorAll("[data-f]").forEach(el=>el.value="");
+      loadSol();
+    }
+  }catch(e){ $("solMsg").innerHTML = `<div class="bad">Не отправилось: ${esc(e.message)}</div>`; }
+  btn.disabled = false; btn.textContent = "Отправить заявку";
+}
+
+const SOL_NAME = {alta:"🟢 Alta", baja:"🔴 Baja", medico:"🏥 Médico", cambio:"🔁 Cambio"};
+async function loadSol(){
+  await solMeta();
+  $("solList").innerHTML = `<tr><td class="muted">Загрузка…</td></tr>`;
+  try{
+    const r = await fetch("/hr/api/sol/mine",{credentials:"same-origin",headers:AUTH()});
+    const d = await r.json();
+    const rows = d.solicitudes || [];
+    if(!rows.length){ $("solList").innerHTML = `<tr><td class="muted">Заявок пока нет</td></tr>`; return; }
+    $("solList").innerHTML = `<thead><tr><th>Дата</th><th>Тип</th><th>Сотрудник</th><th>Локаль</th><th>Автор</th><th>Статус</th></tr></thead><tbody>`
+      + rows.map(x=>`<tr><td>${esc(x.fecha)}</td><td>${SOL_NAME[x.tipo]||x.tipo}</td><td>${esc(x.nombre)}</td><td>${esc(x.local)}</td><td>${esc(x.autor)}</td><td>${esc(x.estado)}</td></tr>`).join("")
+      + `</tbody>`;
+  }catch(e){ $("solList").innerHTML = `<tr><td class="bad">${esc(e.message)}</td></tr>`; }
+}
+$("solKinds").onclick = async e=>{
+  const c = e.target.closest(".chip"); if(!c) return;
+  await solMeta();
+  document.querySelectorAll("#solKinds .chip").forEach(x=>x.classList.toggle("on", x===c));
+  solForm(c.dataset.k);
+};
+$("solReload").onclick = loadSol;
+
+// ---------- досье сотрудника ----------
+async function showDocs(name){
+  const box = $("docsBox"); if(!box) return;
+  box.innerHTML = `<div class="sub">Собираю документы…</div>`;
+  try{
+    const r = await fetch("/hr/api/docs?name="+encodeURIComponent(name),{credentials:"same-origin",headers:AUTH()});
+    const d = await r.json();
+    if(d.error) throw new Error(d.error);
+    let h = "";
+    if((d.mails||[]).length){
+      h += `<div class="docsec"><h3>Документы из почты</h3>` + d.mails.map(m=>
+        `<div class="row" style="margin:4px 0"><span>${esc(m.tipo||"—")} · ${esc(m.file)} <span class="sub">${esc(m.fecha)}</span></span>
+         <button class="btn" data-msg="${esc(m.msg)}" data-file="${esc(m.file)}">📥 в Telegram</button></div>`).join("") + `</div>`;
+    }
+    if((d.solicitudes||[]).length){
+      h += `<div class="docsec"><h3>Заявки</h3>` + d.solicitudes.map(x=>
+        `<div style="margin:4px 0">${SOL_NAME[x.tipo]||x.tipo} · ${esc(x.fecha)} · ${esc(x.autor)} · ${esc(x.estado||"новая")}</div>`).join("") + `</div>`;
+    }
+    const fi = d.ficha || {};
+    if(Object.keys(fi).length){
+      h += `<div class="docsec"><h3>Анкета Solicitud</h3><dl>` +
+        Object.entries(fi).filter(([k,v])=>!/^http/.test(v)).map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("") +
+        Object.entries(fi).filter(([k,v])=>/^http/.test(v)).map(([k,v])=>`<dt>${esc(k)}</dt><dd><a href="${esc(v)}" target="_blank" rel="noopener">открыть ↗</a></dd>`).join("") +
+        `</dl></div>`;
+    }
+    box.innerHTML = h || `<div class="sub">Документов пока нет.</div>`;
+    box.onclick = async ev=>{
+      const b = ev.target.closest("button[data-msg]"); if(!b) return;
+      b.disabled = true; b.textContent = "Отправляю…";
+      await fetch("/hr/api/docs/send",{method:"POST",credentials:"same-origin",
+        headers:Object.assign({"Content-Type":"application/json"},AUTH()),
+        body:JSON.stringify({msg:b.dataset.msg,file:b.dataset.file})});
+      b.textContent = "✓ ушло в Telegram";
+    };
+  }catch(e){ box.innerHTML = `<div class="bad">${esc(e.message)}</div>`; }
+}
+
 $("refresh").onclick = ()=>load(true);
 $("reset").onclick = ()=>{Object.assign(S,{estado:"activo",q:"",dep:"",puesto:"",sex:"",asof:"",altaFrom:"",altaTo:"",page:0}); S.locs.clear();
   ["q","dep","puesto","sex","asof","altaFrom","altaTo"].forEach(id=>$(id).value=""); buildOptions(); render();};

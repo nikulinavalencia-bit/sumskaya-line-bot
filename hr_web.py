@@ -38,7 +38,7 @@ from datetime import datetime, date
 
 log = logging.getLogger("sumskaya.hr_web")
 
-VERSION = "hr_web 1.3 · 19.09.2026"
+VERSION = "hr_web 1.4 · 23.09.2026"
 
 M = None          # модуль bot.py — берём оттуда таблицы, роли, bot
 _runner = None
@@ -107,6 +107,33 @@ def _is_patron(uid: int) -> bool:
     except Exception as e:
         log.error("hr_web: не удалось проверить роль %s: %s", uid, e)
         return False
+
+
+def user_role(uid: int) -> str:
+    """'patron' — видит всё; 'manager' — только подача заявок; '' — нет доступа."""
+    try:
+        u = M.get_user(uid)
+        if not u or str(u.get("Статус", "")).strip() != "active":
+            return ""
+        role = str(u.get("Роль", "")).strip()
+        if role == M.ROLE_PATRON:
+            return "patron"
+        if role == M.ROLE_MANAGER:
+            return "manager"
+    except Exception as e:
+        log.error("hr_web: не удалось проверить роль %s: %s", uid, e)
+    return ""
+
+
+def user_name(uid: int) -> str:
+    try:
+        return str((M.get_user(uid) or {}).get("Имя", "")).strip() or str(uid)
+    except Exception:
+        return str(uid)
+
+
+# Другие модули (solicitudes) добавляют сюда свои маршруты: func(app).
+EXTRA_ROUTES = []
 
 
 # ---------------- ЧТЕНИЕ REGISTRO ----------------
@@ -403,7 +430,7 @@ def _build_app():
     def _uid_from(request):
         uid = check_token(request.cookies.get(COOKIE, "")) \
             or check_webapp(request.headers.get("X-TG-Init-Data", ""))
-        return uid if uid and _is_patron(uid) else None
+        return uid if uid and user_role(uid) else None
 
     async def page(request):
         # Страница сама по себе без данных — отдаём всегда; данные даёт
@@ -411,7 +438,7 @@ def _build_app():
         t = request.query.get("t")
         if t:
             uid = check_token(t)
-            if not uid or not _is_patron(uid):
+            if not uid or not user_role(uid):
                 return web.Response(text=_denied(), content_type="text/html", status=403)
             resp = web.HTTPFound("/hr")
             _set_cookie(resp, uid)
@@ -424,11 +451,19 @@ def _build_app():
         uid = _uid_from(request)
         if not uid:
             return web.json_response({"error": "auth"}, status=401)
-        try:
-            data = await load_data(force=request.query.get("force") == "1")
-        except Exception as e:
-            log.error("hr_web: ошибка чтения Registro: %s", e, exc_info=True)
-            return web.json_response({"error": f"{type(e).__name__}: {e}"}, status=500)
+        role = user_role(uid)
+        if role == "manager":
+            # Управляющему — только его имя и вкладка заявок, без личных данных.
+            data = {"records": [], "role": role, "me": user_name(uid),
+                    "updated": M.now_local().strftime("%d.%m.%Y %H:%M"),
+                    "columns_missing": []}
+        else:
+            try:
+                data = await load_data(force=request.query.get("force") == "1")
+            except Exception as e:
+                log.error("hr_web: ошибка чтения Registro: %s", e, exc_info=True)
+                return web.json_response({"error": f"{type(e).__name__}: {e}"}, status=500)
+            data = dict(data, role=role, me=user_name(uid))
         resp = web.json_response(data, headers={"Cache-Control": "no-store"})
         if not check_token(request.cookies.get(COOKIE, "")):
             _set_cookie(resp, uid)   # вошли из Telegram — запомним и для браузера
@@ -442,6 +477,12 @@ def _build_app():
     app.router.add_get("/health", health)
     app.router.add_get("/hr", page)
     app.router.add_get("/hr/api/data", api)
+    app["uid_from"] = _uid_from
+    for add in EXTRA_ROUTES:
+        try:
+            add(app)
+        except Exception as e:
+            log.error("hr_web: маршрут модуля не добавлен: %s", e, exc_info=True)
     return app
 
 
@@ -507,13 +548,13 @@ def setup(dp, main_module):
 
     @dp.message(Command("archivo"))
     async def cmd_archivo(m):
-        if m.chat.type != "private" or not _is_patron(m.from_user.id):
+        if m.chat.type != "private" or not user_role(m.from_user.id):
             return
         await send_link(m.chat.id, m.from_user.id)
 
     @dp.callback_query(F.data == "hrweb")
     async def cb_hrweb(c):
-        if not _is_patron(c.from_user.id):
+        if not user_role(c.from_user.id):
             await c.answer("Только Патрон", show_alert=True)
             return
         await c.answer()

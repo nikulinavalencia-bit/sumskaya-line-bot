@@ -1604,6 +1604,14 @@ try:
 except Exception as _e:
     log.error("cl_export не подключён: %s", _e, exc_info=True)
 
+# Заявки управляющих: Alta / Baja / Médico / Cambio (вкладка в веб-архиве).
+try:
+    import sys as _sys
+    import solicitudes
+    solicitudes.setup(dp, _sys.modules[__name__])
+except Exception as _e:
+    log.error("solicitudes не подключён: %s", _e, exc_info=True)
+
 # Расчёт остатка отпуска (/vacaciones).
 try:
     import sys as _sys
@@ -1912,6 +1920,10 @@ async def cb_dept(c: CallbackQuery):
                 text=f"🗄 Архив по почте ({len(rows(MAIL_WS))})", callback_data="hrarch")])
             kb.append([InlineKeyboardButton(text="🌐 Архив сотрудников (веб)", callback_data="hrweb")])
             kb.append([InlineKeyboardButton(text="🏖 Расчёт отпуска", callback_data="vac")])
+        else:
+            # Управляющему — только подача заявок через сайт.
+            kb.append([InlineKeyboardButton(text="📝 Заявки (Alta / Baja / Médico / Cambio)",
+                                            callback_data="hrweb")])
         kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
         await take_over(c, f"{crumb(dept, lang)}", InlineKeyboardMarkup(inline_keyboard=kb))
         await c.answer()
