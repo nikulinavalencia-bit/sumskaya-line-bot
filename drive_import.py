@@ -293,6 +293,15 @@ def audit() -> dict:
 
 # ---------------- ТЕЛЕГРАМ ----------------
 
+
+# Строки/папки, для которых уже пробовали дозаполнить/добавить и там
+# правда нечего взять (в документе нет данных, либо нет читаемого файла).
+# Без этого кнопка «Ещё» каждый раз снова упиралась бы в них же самих,
+# вместо того чтобы двигаться к следующим людям.
+_stuck_fill = set()   # номера строк Registro
+_stuck_add = set()    # id папок на Диске
+
+
 def _kb(rows):
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     kb = [[InlineKeyboardButton(text=t, callback_data=d)] for t, d in rows]
@@ -364,6 +373,10 @@ def setup(dp, main_module):
             await c.answer("Только Патрон", show_alert=True)
             return
         await c.answer()
+        # «Пересчитать» — сигнал, что могли что-то поправить руками (документ,
+        # написание имени) — даём ранее «застрявшим» ещё один шанс.
+        _stuck_fill.clear()
+        _stuck_add.clear()
         await report(c.from_user.id)
 
     @dp.callback_query(F.data == "drvfill")
@@ -374,9 +387,17 @@ def setup(dp, main_module):
         await c.answer("Читаю документы…")
         uid = c.from_user.id
         a = await asyncio.to_thread(audit)
-        targets = a["empties"][:BATCH]
+        candidates = [x for x in a["empties"] if x[1]["row"] not in _stuck_fill]
+        targets = candidates[:BATCH]
         if not targets:
-            await M.bot.send_message(uid, "Пустых полей не осталось.")
+            skipped = len(a["empties"]) - len(candidates)
+            if skipped:
+                await M.bot.send_message(
+                    uid, f"Из документов больше нечего дозаполнить — {skipped} человек(а) "
+                         "остаются с пустыми полями (в их документах этих данных просто нет), "
+                         "это уже на ручную проверку.")
+            else:
+                await M.bot.send_message(uid, "Пустых полей не осталось.")
             return
         w, headers, cols, parts = await asyncio.to_thread(_registro_ctx)
         esc, done, fails = M.html_lib.escape, [], []
@@ -385,19 +406,25 @@ def setup(dp, main_module):
                 data = await asyncio.to_thread(read_folder, f)
                 if data.get("error"):
                     fails.append(f"{p['name']} — {data['error']}")
+                    _stuck_fill.add(p["row"])
                     continue
                 filled = await asyncio.to_thread(fill_row, w, p["row"], cols, parts, data)
-                done.append(f"{p['name']} — {', '.join(filled) if filled else 'нечего дописывать'}")
+                if filled:
+                    done.append(f"{p['name']} — {', '.join(filled)}")
+                else:
+                    done.append(f"{p['name']} — нечего дописывать")
+                    _stuck_fill.add(p["row"])
             except Exception as e:
                 log.error("drive_import: %s — %s", p["name"], e)
                 fails.append(f"{p['name']} — {type(e).__name__}: {e}")
+                _stuck_fill.add(p["row"])
             await asyncio.sleep(1.5)
         text = [f"✏️ <b>Заполнено по документам: {len(done)}</b>\n"]
         text += [f"• {esc(x)}" for x in done[:25]]
         if fails:
             text.append("\n<b>Не получилось:</b>")
             text += [f"• {esc(x)}" for x in fails[:15]]
-        left = len(a["empties"]) - len(targets)
+        left = len(candidates) - len(targets)
         if left > 0:
             text.append(f"\nОсталось: <b>{left}</b> — нажмите ещё раз.")
         await M.bot.send_message(uid, "\n".join(text)[:4000],
@@ -412,9 +439,16 @@ def setup(dp, main_module):
         await c.answer("Читаю документы…")
         uid = c.from_user.id
         a = await asyncio.to_thread(audit)
-        targets = a["no_person"][:BATCH]
+        candidates = [f for f in a["no_person"] if f["id"] not in _stuck_add]
+        targets = candidates[:BATCH]
         if not targets:
-            await M.bot.send_message(uid, "Все папки уже есть в Registro.")
+            skipped = len(a["no_person"]) - len(candidates)
+            if skipped:
+                await M.bot.send_message(
+                    uid, f"Осталось {skipped} папок(и), которые не получилось прочитать "
+                         "(нет PDF/фото внутри) — их нужно добавить вручную.")
+            else:
+                await M.bot.send_message(uid, "Все папки уже есть в Registro.")
             return
         esc, done, fails = M.html_lib.escape, [], []
         for f in targets:
@@ -422,6 +456,7 @@ def setup(dp, main_module):
                 data = await asyncio.to_thread(read_folder, f)
                 if data.get("error"):
                     fails.append(f"{f['name']} — {data['error']}")
+                    _stuck_add.add(f["id"])
                     continue
                 name = data.get("nombre") or f["name"]
                 await asyncio.to_thread(add_row, data, name, local_tag(f["local"]))
@@ -429,13 +464,14 @@ def setup(dp, main_module):
             except Exception as e:
                 log.error("drive_import: %s — %s", f["name"], e)
                 fails.append(f"{f['name']} — {type(e).__name__}: {e}")
+                _stuck_add.add(f["id"])
             await asyncio.sleep(2)
         text = [f"➕ <b>Добавлено в Registro: {len(done)}</b>\n"]
         text += [f"• {esc(x)}" for x in done[:25]]
         if fails:
             text.append("\n<b>Не получилось:</b>")
             text += [f"• {esc(x)}" for x in fails[:15]]
-        left = len(a["no_person"]) - len(targets)
+        left = len(candidates) - len(targets)
         if left > 0:
             text.append(f"\nОсталось: <b>{left}</b> — нажмите ещё раз.")
         await M.bot.send_message(uid, "\n".join(text)[:4000],
