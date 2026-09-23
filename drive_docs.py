@@ -34,7 +34,7 @@ import requests
 
 log = logging.getLogger("sumskaya.drive_docs")
 
-VERSION = "drive_docs 1.0 · 23.09.2026"
+VERSION = "drive_docs 1.1 · 23.09.2026"
 
 M = None
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
@@ -90,26 +90,43 @@ def _list(parent: str) -> list:
 
 
 FOLDER = "application/vnd.google-apps.folder"
+MAX_DEPTH = 5   # локаль → (категория: Cocina/Bar/Camareros/…) → сотрудник —
+                # вложенность разная в разных локалях, поэтому спускаемся,
+                # пока в папке есть подпапки, а не фиксируем число уровней
+
+
+def _scan_folder(node: dict, local_name: str, depth: int, out: list):
+    """Лист (папка без вложенных папок) — это папка сотрудника, на каком бы
+    уровне она ни лежала. Папка с подпапками — категория, спускаемся глубже."""
+    items = _list(node["id"])
+    subfolders = [it for it in items if it.get("mimeType") == FOLDER]
+    files = [it for it in items if it.get("mimeType") != FOLDER]
+    if subfolders and depth < MAX_DEPTH:
+        for sf in subfolders:
+            _scan_folder(sf, local_name, depth + 1, out)
+        return
+    out.append({
+        "id": node["id"], "name": node["name"], "local": local_name,
+        "link": node.get("webViewLink", ""),
+        "files": [{"id": f["id"], "name": f["name"],
+                   "fecha": str(f.get("modifiedTime", ""))[:10],
+                   "link": f.get("webViewLink", "")} for f in files],
+    })
 
 
 def _scan_sync() -> list:
-    """Дерево «локаль → сотрудник → файлы», два уровня вглубь."""
+    """Дерево «локаль → (категория →)* сотрудник → файлы». Между локалью и
+    сотрудником может быть промежуточная папка-категория (Cocina, Bar,
+    Camareros, Manager, Ayudantes, Limpieza, DESPEDIDO…) — глубина не
+    фиксирована, поэтому спускаемся, пока встречаются подпапки."""
     folders = []
     for lvl1 in _list(root_id()):
         if lvl1.get("mimeType") != FOLDER:
             continue
         for lvl2 in _list(lvl1["id"]):
             if lvl2.get("mimeType") != FOLDER:
-                # файл прямо в папке локали — тоже сохраняем как «общий»
                 continue
-            files = [f for f in _list(lvl2["id"]) if f.get("mimeType") != FOLDER]
-            folders.append({
-                "id": lvl2["id"], "name": lvl2["name"], "local": lvl1["name"],
-                "link": lvl2.get("webViewLink", ""),
-                "files": [{"id": f["id"], "name": f["name"],
-                           "fecha": str(f.get("modifiedTime", ""))[:10],
-                           "link": f.get("webViewLink", "")} for f in files],
-            })
+            _scan_folder(lvl2, lvl1["name"], 2, folders)
     log.info("drive_docs: найдено папок сотрудников — %d", len(folders))
     return folders
 
