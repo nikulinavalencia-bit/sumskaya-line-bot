@@ -65,6 +65,25 @@ GMAIL_CHECK_INTERVAL = 15 * 60  # секунд
 EMPLEADOS_CHAT_ID = os.environ.get("EMPLEADOS_CHAT_ID", "")
 SIGNING_HOURS = "11:00–16:00"
 
+# Почта Histora — предпочтительно через IMAP с паролем приложения (не
+# истекает, в отличие от OAuth в режиме Testing). Если GMAIL_APP_PASSWORD не
+# задан, автоматически используется прежний путь через Gmail API/OAuth.
+try:
+    import mail_imap
+except Exception as _e:
+    mail_imap = None
+    log.warning("mail_imap не подключён: %s", _e)
+
+
+def _imap():
+    """Модуль mail_imap, если для него настроен пароль приложения, иначе None."""
+    if mail_imap is None:
+        return None
+    try:
+        return mail_imap if mail_imap.enabled() else None
+    except Exception:
+        return None
+
 # Ключевые фразы для автоматического распознавания типа заявки из группы
 # Empleados — без хэштегов, по смыслу текста сообщения.
 EMPLEADOS_CATEGORY_KEYWORDS = {
@@ -867,8 +886,19 @@ def _gmail_search_all_messages(q: str, max_total: int = 200):
 
 
 def _check_gmail_contracts_sync():
-    """Синхронная (блокирующая) проверка почты — вызывается через to_thread."""
+    """Синхронная (блокирующая) проверка почты — вызывается через to_thread.
+    Если настроен пароль приложения — читает через IMAP, иначе через Gmail
+    API/OAuth (старый путь, оставлен на случай, если IMAP недоступен)."""
     seen = {str(r.get("MessageID")) for r in rows(MAIL_WS, force=True)}
+    im = _imap()
+    if im:
+        try:
+            items = im.fetch_recent(GMAIL_ATTACHMENT_KEYWORDS)
+        except Exception as e:
+            log.error("IMAP: не удалось прочитать почту: %s", e)
+            return []
+        return [it for it in items if it["id"] not in seen]
+
     q = " OR ".join(f"filename:{kw}" for kw in GMAIL_ATTACHMENT_KEYWORDS)
     ids = _gmail_search_all_messages(q)
     found = []
@@ -896,6 +926,14 @@ async def check_gmail_contracts():
 
 
 def _gmail_download_attachment_sync(msg_id: str, attachment_id: str):
+    im = _imap()
+    if im:
+        # для писем, найденных через IMAP, attachment_id — это имя файла
+        try:
+            return im.download(msg_id, attachment_id)
+        except Exception as e:
+            log.error("IMAP: не удалось скачать вложение %s из %s: %s", attachment_id, msg_id, e)
+            return None
     data = _gmail_api_get_sync(f"messages/{msg_id}/attachments/{attachment_id}")
     if not data or "data" not in data:
         return None
@@ -1047,7 +1085,8 @@ async def gmail_watch_loop():
     while True:
         try:
             await notify_new_contracts()
-            if _gmail_auth_status["broken"] and not _gmail_auth_status["notified"]:
+            if (_gmail_auth_status["broken"] and not _gmail_auth_status["notified"]
+                    and not _imap()):
                 _gmail_auth_status["notified"] = True
                 for pid in patrons():
                     try:
@@ -1078,41 +1117,23 @@ async def gmail_watch_loop():
 
 
 def _gmail_diag_sync():
-    """Диагностика: сколько писем Gmail вообще находит по поисковому запросу
-    (до фильтрации по вложениям) — помогает понять, где рвётся цепочка."""
+    """Диагностика: сколько писем находится по поисковому запросу (до
+    фильтрации по вложениям) — помогает понять, где рвётся цепочка."""
+    im = _imap()
+    if im:
+        r = im.check()
+        return {"auth_ok": bool(r.get("ok")), "count": r.get("count", 0),
+                "via": "IMAP", "error": r.get("error", "")}
     token = _gmail_get_access_token_sync()
     if not token:
-        return {"auth_ok": False, "count": 0}
+        return {"auth_ok": False, "count": 0, "via": "OAuth"}
     q = " OR ".join(f"filename:{kw}" for kw in GMAIL_ATTACHMENT_KEYWORDS)
     ids = _gmail_search_all_messages(q)
-    return {"auth_ok": True, "count": len(ids)}
+    return {"auth_ok": True, "count": len(ids), "via": "OAuth"}
 
 
 async def gmail_diag():
     return await asyncio.to_thread(_gmail_diag_sync)
-    """Фоновая задача — проверяет почту каждые GMAIL_CHECK_INTERVAL секунд."""
-    while True:
-        try:
-            await notify_new_contracts()
-            if _gmail_auth_status["broken"] and not _gmail_auth_status["notified"]:
-                _gmail_auth_status["notified"] = True
-                for pid in patrons():
-                    try:
-                        await bot.send_message(
-                            pid,
-                            "⚠️ Доступ к почте (sl.valencia.resta@gmail.com) истёк.\n\n"
-                            "Причина: приложение в Google Cloud в режиме <b>Testing</b> — "
-                            "там refresh token живёт 7 дней.\n"
-                            "Чтобы это было в последний раз: Google Cloud Console → "
-                            "APIs &amp; Services → OAuth consent screen → <b>Publish app</b> "
-                            "(Production), затем один раз получить новый токен и обновить "
-                            "<code>GMAIL_REFRESH_TOKEN</code> в Railway.",
-                        )
-                    except Exception:
-                        pass
-        except Exception as e:
-            log.error("Ошибка фоновой проверки почты: %s", e)
-        await asyncio.sleep(GMAIL_CHECK_INTERVAL)
 
 
 # ---------------- ПОЛЬЗОВАТЕЛИ ----------------
@@ -2905,6 +2926,13 @@ def mail_archive_names():
 
 
 def _gmail_redownload_sync(msg_id: str, filename: str):
+    im = _imap()
+    if im:
+        try:
+            return im.download(msg_id, filename)
+        except Exception as e:
+            log.error("IMAP: не удалось перескачать %s из %s: %s", filename, msg_id, e)
+            return None
     msg = _gmail_api_get_sync(f"messages/{msg_id}", {"format": "full"})
     if not msg:
         return None
@@ -3093,25 +3121,39 @@ async def cb_hr_mail_check(c: CallbackQuery):
     n = await notify_new_contracts()
     if n == 0:
         diag = await gmail_diag()
+        via = diag.get("via", "")
         if not diag["auth_ok"]:
-            await bot.send_message(
-                c.from_user.id,
-                "⚠️ Не удалось подключиться к почте.\n\n"
-                "Скорее всего истёк refresh token: приложение в Google Cloud "
-                "в режиме Testing, там токен живёт 7 дней. Лечится один раз — "
-                "OAuth consent screen → Publish app (Production) и новый токен "
-                "в <code>GMAIL_REFRESH_TOKEN</code>.",
-            )
+            if via == "IMAP":
+                err = html_lib.escape(diag.get("error", "") or "неизвестная ошибка")
+                await bot.send_message(
+                    c.from_user.id,
+                    "⚠️ Не удалось подключиться к почте по IMAP "
+                    f"(<code>{mail_imap.USER}</code>).\n\n"
+                    f"Ошибка: <code>{err}</code>\n\n"
+                    "Проверьте в Railway GMAIL_USER / GMAIL_APP_PASSWORD — "
+                    "возможно, пароль приложения был отозван или введён с опечаткой.",
+                )
+            else:
+                await bot.send_message(
+                    c.from_user.id,
+                    "⚠️ Не удалось подключиться к почте.\n\n"
+                    "Скорее всего истёк refresh token: приложение в Google Cloud "
+                    "в режиме Testing, там токен живёт 7 дней. Лечится один раз — "
+                    "OAuth consent screen → Publish app (Production) и новый токен "
+                    "в <code>GMAIL_REFRESH_TOKEN</code>.\n\n"
+                    "Либо задайте GMAIL_APP_PASSWORD в Railway — тогда почта пойдёт "
+                    "через IMAP и это отключится совсем.",
+                )
         elif diag["count"] == 0:
             await bot.send_message(
                 c.from_user.id,
-                "Почта проверена — Gmail не нашёл ни одного письма с вложением, "
+                f"Почта проверена ({via}) — не нашла ни одного письма с вложением, "
                 "где в имени файла есть CONTRATO / BAJA / CAMBIO.",
             )
         else:
             await bot.send_message(
                 c.from_user.id,
-                f"Почта проверена — Gmail нашёл {diag['count']} подходящих писем, "
+                f"Почта проверена ({via}) — нашла {diag['count']} подходящих писем, "
                 "но все они уже были показаны раньше (или проблема в имени вложения "
                 "внутри письма — сверю ещё раз, если пришлёшь пример темы письма).",
             )
@@ -3647,7 +3689,7 @@ async def main():
         except Exception:
             pass
 
-    if GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET and GMAIL_REFRESH_TOKEN:
+    if _imap() or (GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET and GMAIL_REFRESH_TOKEN):
         asyncio.create_task(gmail_watch_loop())
 
     while True:

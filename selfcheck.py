@@ -134,7 +134,16 @@ def build_checks():
         ("📁 Папки сотрудников с Google Диска (DRIVE_ROOT_ID)",
          lambda: bool(getattr(sys.modules.get("drive_docs"), "M", None))
          and bool(os.environ.get("DRIVE_ROOT_ID"))),
+        ("📧 Почта Histora по IMAP (пароль приложения)", _imap_on),
     ]
+
+
+def _imap_on() -> bool:
+    try:
+        mod = getattr(core, "mail_imap", None) or sys.modules.get("mail_imap")
+        return bool(mod and mod.enabled())
+    except Exception:
+        return False
 
 
 def _ocr_on() -> bool:
