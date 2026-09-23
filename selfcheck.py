@@ -129,6 +129,11 @@ def build_checks():
          lambda: bool(getattr(sys.modules.get("vacaciones"), "M", None))),
         ("📝 Заявки Alta/Baja/Médico/Cambio подключены",
          lambda: bool(getattr(sys.modules.get("solicitudes"), "M", None))),
+        ("🗂 Восстановление архива с Диска (/restaurar)",
+         lambda: bool(getattr(sys.modules.get("drive_import"), "M", None))),
+        ("📁 Папки сотрудников с Google Диска (DRIVE_ROOT_ID)",
+         lambda: bool(getattr(sys.modules.get("drive_docs"), "M", None))
+         and bool(os.environ.get("DRIVE_ROOT_ID"))),
     ]
 
 

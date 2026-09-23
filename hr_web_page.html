@@ -90,18 +90,21 @@ a{color:var(--acc)}
 <div class="wrap">
   <header>
     <div>
-      <h1>Архив сотрудников</h1>
+      <h1 data-i18n="title">Архив сотрудников</h1>
       <div class="sub" id="meta">Загрузка Registro…</div>
     </div>
-    <div style="display:flex;gap:8px">
-      <button class="btn" id="reset">Сбросить фильтры</button>
-      <button class="btn" id="refresh">↻ Обновить</button>
+    <div style="display:flex;gap:8px;align-items:center">
+      <div class="seg" id="langSeg">
+        <button data-l="ru">RU</button><button data-l="es">ES</button>
+      </div>
+      <button class="btn" id="reset" data-i18n="reset">Сбросить фильтры</button>
+      <button class="btn" id="refresh" data-i18n="refresh">↻ Обновить</button>
     </div>
   </header>
 
   <div class="seg" id="tabs" style="margin-bottom:14px">
-    <button data-t="emp" class="on">👥 Сотрудники</button>
-    <button data-t="sol">📝 Заявки</button>
+    <button data-t="emp" class="on" data-i18n="tabEmp">👥 Сотрудники</button>
+    <button data-t="sol" data-i18n="tabSol">📝 Заявки</button>
   </div>
 
   <div id="tabEmp">
@@ -109,22 +112,22 @@ a{color:var(--acc)}
     <div class="row" style="margin-bottom:10px">
       <div class="chips" id="locChips"></div>
       <div class="seg" id="estadoSeg">
-        <button data-v="activo" class="on">Работают</button>
-        <button data-v="proceso">В оформлении</button>
-        <button data-v="baja">Уволены</button>
-        <button data-v="all">Все</button>
+        <button data-v="activo" class="on" data-i18n="stActivo">Работают</button>
+        <button data-v="proceso" data-i18n="stProceso">В оформлении</button>
+        <button data-v="baja" data-i18n="stBaja">Уволены</button>
+        <button data-v="all" data-i18n="stAll">Все</button>
       </div>
     </div>
     <div class="filters">
-      <label>Поиск<input id="q" placeholder="имя, NIE, телефон, email"></label>
+      <label><span data-i18n="fSearch">Поиск</span><input id="q" data-i18n-ph="phSearch" placeholder="имя, NIE, телефон, email"></label>
       <label>Departamento<select id="dep"></select></label>
       <label>Puesto<select id="puesto"></select></label>
-      <label>Пол<select id="sex"><option value="">Все</option><option>M</option><option>F</option></select></label>
-      <label>Числились на дату<input type="date" id="asof"></label>
-      <label>Приняты с<input type="date" id="altaFrom"></label>
-      <label>Приняты по<input type="date" id="altaTo"></label>
+      <label><span data-i18n="fSex">Пол</span><select id="sex"><option value="" data-i18n="stAll">Все</option><option>M</option><option>F</option></select></label>
+      <label><span data-i18n="fAsof">Числились на дату</span><input type="date" id="asof"></label>
+      <label><span data-i18n="fFrom">Приняты с</span><input type="date" id="altaFrom"></label>
+      <label><span data-i18n="fTo">Приняты по</span><input type="date" id="altaTo"></label>
     </div>
-    <div class="sub" id="asofNote" hidden>Режим «на дату»: показаны все, кто был принят не позже этой даты и не уволен до неё. Кнопки «Работают/Уволены» в этом режиме не действуют.</div>
+    <div class="sub" id="asofNote" hidden data-i18n="asofNote">Режим «на дату»: показаны все, кто был принят не позже этой даты и не уволен до неё. Кнопки «Работают/Уволены» в этом режиме не действуют.</div>
   </div>
 
   <div class="kpis" id="kpis"></div>
@@ -133,7 +136,7 @@ a{color:var(--acc)}
   <div class="card">
     <div class="row">
       <h2 style="margin:0" id="listTitle">Сотрудники</h2>
-      <button class="btn primary" id="csvList">Выгрузить список CSV</button>
+      <button class="btn primary" id="csvList" data-i18n="csvList">Выгрузить список CSV</button>
     </div>
     <div class="tbl-wrap"><table id="list"></table></div>
     <div class="pager" id="pager"></div>
@@ -141,13 +144,13 @@ a{color:var(--acc)}
 
   <div class="grid2" style="margin-top:14px">
     <div class="card">
-      <div class="row"><h2 style="margin:0">Локаль × Departamento</h2>
+      <div class="row"><h2 style="margin:0" data-i18n="pivot">Локаль × Departamento</h2>
         <button class="btn" id="csvPivot">CSV</button></div>
       <div class="tbl-wrap"><table id="pivot"></table></div>
     </div>
     <div class="card">
-      <div class="row"><h2 style="margin:0">Приём и увольнения по месяцам</h2>
-        <span class="sub">последние 12 мес., с учётом фильтров</span></div>
+      <div class="row"><h2 style="margin:0" data-i18n="moves">Приём и увольнения по месяцам</h2>
+        <span class="sub" data-i18n="moves12">последние 12 мес., с учётом фильтров</span></div>
       <div class="tbl-wrap"><table id="moves"></table></div>
     </div>
   </div>
@@ -157,18 +160,18 @@ a{color:var(--acc)}
 
   <div id="tabSol" hidden>
     <div class="card" style="margin-bottom:14px">
-      <h2>Новая заявка</h2>
+      <h2 data-i18n="solNew">Новая заявка</h2>
       <div class="chips" id="solKinds">
-        <span class="chip" data-k="alta">🟢 Alta — новый сотрудник</span>
-        <span class="chip" data-k="baja">🔴 Baja — увольнение</span>
-        <span class="chip" data-k="medico">🏥 Seguro médico</span>
-        <span class="chip" data-k="cambio">🔁 Cambio — изменение контракта</span>
+        <span class="chip" data-k="alta" data-i18n="kAlta">🟢 Alta — новый сотрудник</span>
+        <span class="chip" data-k="baja" data-i18n="kBaja">🔴 Baja — увольнение</span>
+        <span class="chip" data-k="medico" data-i18n="kMedico">🏥 Seguro médico</span>
+        <span class="chip" data-k="cambio" data-i18n="kCambio">🔁 Cambio — изменение контракта</span>
       </div>
       <div id="solForm"></div>
     </div>
     <div class="card">
-      <div class="row"><h2 style="margin:0">Отправленные заявки</h2>
-        <button class="btn" id="solReload">↻ Обновить</button></div>
+      <div class="row"><h2 style="margin:0" data-i18n="solSent">Отправленные заявки</h2>
+        <button class="btn" id="solReload" data-i18n="refresh">↻ Обновить</button></div>
       <div class="tbl-wrap"><table id="solList"></table></div>
     </div>
   </div>
@@ -181,12 +184,94 @@ const LOC_NAME = {"REINA":"Reina","FRANCIA":"Francia","BAKERY":"Bakery","BOI BOI
 const PAGE = 50;
 let ALL = [], META = {};
 try{ if(window.Telegram && Telegram.WebApp){ Telegram.WebApp.ready(); Telegram.WebApp.expand(); } }catch(e){}
+const TR = {
+  ru:{
+    title:"Архив сотрудников", reset:"Сбросить фильтры", refresh:"↻ Обновить",
+    tabEmp:"👥 Сотрудники", tabSol:"📝 Заявки",
+    stActivo:"Работают", stProceso:"В оформлении", stBaja:"Уволены", stAll:"Все",
+    fSearch:"Поиск", phSearch:"имя, NIE, телефон, email", fSex:"Пол",
+    fAsof:"Числились на дату", fFrom:"Приняты с", fTo:"Приняты по",
+    asofNote:"Режим «на дату»: показаны все, кто был принят не позже этой даты и не уволен до неё. Кнопки «Работают/Уволены» в этом режиме не действуют.",
+    pivot:"Локаль × Departamento", moves:"Приём и увольнения по месяцам",
+    moves12:"последние 12 мес., с учётом фильтров",
+    csvList:"Выгрузить список CSV", solNew:"Новая заявка", solSent:"Отправленные заявки",
+    kAlta:"🟢 Alta — новый сотрудник", kBaja:"🔴 Baja — увольнение",
+    kMedico:"🏥 Seguro médico", kCambio:"🔁 Cambio — изменение контракта",
+    loading:"Загрузка Registro…", records:"записей", updated:"обновлено",
+    missing:"не найдены колонки", inSel:"в выборке", onDate:"числились на",
+    working:"работают сейчас", inProc:"в оформлении", firedTotal:"уволены (всего)",
+    hiredMonth:"приняты в этом месяце", firedMonth:"уволены в этом месяце",
+    dep:"Departamento", total:"Итого", noData:"Нет данных под фильтр",
+    month:"Месяц", hired:"Принято", fired:"Уволено",
+    cName:"Имя", cLocal:"Локаль", cPuesto:"Puesto", cHoras:"Часы",
+    cEstado:"Статус", employees:"Сотрудники", nobody:"Никого под этот фильтр",
+    tagWork:"работает", tagFired:"уволен(а)", tagProc:"оформление",
+    plan:"план", rowIn:"строка", inRegistro:"в Registro", inChecklist:"в чек-листе HR, этап:",
+    docsBtn:"📁 Документы сотрудника", docsLoading:"Собираю документы…",
+    docsDrive:"Папка сотрудника на Диске", docsMail:"Документы из почты", docsSol:"Заявки", docsFicha:"Анкета Solicitud",
+    docsNone:"Документов пока нет.", toTg:"📥 в Telegram", sent:"✓ ушло в Telegram",
+    send:"Отправить заявку", sending:"Отправляю…", reqNote:"Поля со ★ обязательны",
+    comment:"Комментарий", optional:"необязательно", sentOk:"Заявка отправлена",
+    sentFoto:". Бот попросит в Telegram фото NIE/TIE",
+    colDate:"Дата", colType:"Тип", colEmp:"Сотрудник", colAuthor:"Автор",
+    noSol:"Заявок пока нет", needLogin:"Нужен вход",
+    needLoginTxt:"Откройте архив из бота: HR → «🌐 Архив сотрудников» или команда /archivo.",
+    open:"открыть ↗", folder:"папка на Диске ↗",
+  },
+  es:{
+    title:"Archivo de empleados", reset:"Borrar filtros", refresh:"↻ Actualizar",
+    tabEmp:"👥 Empleados", tabSol:"📝 Solicitudes",
+    stActivo:"Activos", stProceso:"En trámite", stBaja:"Bajas", stAll:"Todos",
+    fSearch:"Buscar", phSearch:"nombre, NIE, teléfono, email", fSex:"Sexo",
+    fAsof:"Plantilla a fecha", fFrom:"Alta desde", fTo:"Alta hasta",
+    asofNote:"Modo «a fecha»: se muestran los que estaban de alta ese día. Los botones Activos/Bajas no se aplican.",
+    pivot:"Local × Departamento", moves:"Altas y bajas por meses",
+    moves12:"últimos 12 meses, con los filtros aplicados",
+    csvList:"Descargar lista CSV", solNew:"Nueva solicitud", solSent:"Solicitudes enviadas",
+    kAlta:"🟢 Alta — nuevo empleado", kBaja:"🔴 Baja — cese",
+    kMedico:"🏥 Seguro médico", kCambio:"🔁 Cambio de contrato",
+    // строки из скриптов
+    loading:"Cargando Registro…", records:"registros", updated:"actualizado",
+    missing:"columnas no encontradas", inSel:"en la selección", onDate:"de alta el",
+    working:"activos ahora", inProc:"en trámite", firedTotal:"bajas (total)",
+    hiredMonth:"altas este mes", firedMonth:"bajas este mes",
+    dep:"Departamento", total:"Total", noData:"Sin datos con este filtro",
+    month:"Mes", hired:"Altas", fired:"Bajas",
+    cName:"Nombre", cLocal:"Local", cPuesto:"Puesto", cHoras:"Horas",
+    cEstado:"Estado", employees:"Empleados", nobody:"Nadie con este filtro",
+    tagWork:"activo", tagFired:"baja", tagProc:"en trámite",
+    plan:"prevista", rowIn:"fila", inRegistro:"en Registro", inChecklist:"en checklist, etapa:",
+    docsBtn:"📁 Documentos del empleado", docsLoading:"Recopilando documentos…",
+    docsDrive:"Carpeta del empleado en Drive", docsMail:"Documentos del correo", docsSol:"Solicitudes", docsFicha:"Formulario Solicitud",
+    docsNone:"Todavía no hay documentos.", toTg:"📥 a Telegram", sent:"✓ enviado a Telegram",
+    send:"Enviar solicitud", sending:"Enviando…", reqNote:"Los campos con ★ son obligatorios",
+    comment:"Comentario", optional:"opcional", sentOk:"Solicitud enviada",
+    sentFoto:". El bot pedirá la foto del NIE/TIE en Telegram",
+    colDate:"Fecha", colType:"Tipo", colEmp:"Empleado", colAuthor:"Autor",
+    noSol:"Todavía no hay solicitudes", needLogin:"Hace falta entrar",
+    needLoginTxt:"Abre el archivo desde el bot: HR → «Archivo de empleados» o el comando /archivo.",
+    open:"abrir ↗", folder:"carpeta en Drive ↗", nMore:"(primeros 20)",
+    fDep:"Departamento", fPuesto:"Puesto",
+  },
+};
+let LANG = (localStorage.getItem("hrLang") || "ru");
+const L = k => (LANG === "es" ? (TR.es[k] || TR.ru[k] || k) : (TR.ru[k] || k));
+function applyLang(){
+  document.documentElement.lang = LANG;
+  document.querySelectorAll("[data-i18n]").forEach(el=>{
+    const v = TR[LANG][el.dataset.i18n]; if(v) el.textContent = v;
+  });
+  document.querySelectorAll("[data-i18n-ph]").forEach(el=>{
+    const v = TR[LANG][el.dataset.i18nPh]; if(v) el.placeholder = v;
+  });
+  document.querySelectorAll("#langSeg button").forEach(b=>b.classList.toggle("on", b.dataset.l===LANG));
+}
 const AUTH = () => {
   const tg = window.Telegram && Telegram.WebApp;
   return (tg && tg.initData) ? {"X-TG-Init-Data": tg.initData} : {};
 };
-const TAG = r => r.estado==="activo" ? '<span class="tag a">работает</span>'
-  : r.estado==="proceso" ? `<span class="tag p">оформление</span>` : '<span class="tag b">уволен(а)</span>';
+const TAG = r => r.estado==="activo" ? `<span class="tag a">${L("tagWork")}</span>`
+  : r.estado==="proceso" ? `<span class="tag p">${L("tagProc")}</span>` : `<span class="tag b">${L("tagFired")}</span>`;
 const S = {tab:"emp", locs:new Set(), estado:"activo", q:"", dep:"", puesto:"", sex:"", asof:"", altaFrom:"", altaTo:"", sort:"name", dir:1, page:0};
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -194,20 +279,20 @@ const fmt = iso => iso ? iso.split("-").reverse().join(".") : "";
 const norm = s => String(s||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"");
 
 async function load(force){
-  $("meta").textContent = "Загрузка Registro…";
+  $("meta").textContent = L("loading");
   try{
     const r = await fetch("/hr/api/data" + (force ? "?force=1" : ""), {credentials:"same-origin", headers:AUTH()});
-    if(r.status === 401){ document.body.innerHTML = '<div class="wrap"><h2>Нужен вход</h2><p>Откройте архив из бота: HR → «🌐 Архив сотрудников» или команда <b>/archivo</b>. В браузере вход потом помнится 90 дней.</p></div>'; return; }
+    if(r.status === 401){ document.body.innerHTML = `<div class="wrap"><h2>${L("needLogin")}</h2><p>${L("needLoginTxt")}</p></div>`; return; }
     const d = await r.json();
     if(d.error) throw new Error(d.error);
     ALL = d.records; META = d;
     if(d.role !== "patron"){
       document.querySelector('#tabs button[data-t="emp"]').hidden = true;
-      $("meta").textContent = `Заявки · ${esc(d.me||"")}`;
+      $("meta").textContent = `${L("tabSol")} · ${esc(d.me||"")}`;
       setTab("sol"); return;
     }
-    let note = `Registro · ${ALL.length} записей · обновлено ${d.updated}`;
-    if(d.columns_missing && d.columns_missing.length) note += ` · не найдены колонки: ${d.columns_missing.join(", ")}`;
+    let note = `Registro · ${ALL.length} ${L("records")} · ${L("updated")} ${d.updated}`;
+    if(d.columns_missing && d.columns_missing.length) note += ` · ${L("missing")}: ${d.columns_missing.join(", ")}`;
     $("meta").textContent = note;
     buildOptions(); render();
   }catch(e){
@@ -221,7 +306,7 @@ function buildOptions(){
     `<span class="chip ${S.locs.has(l)?"on":""}" data-l="${esc(l)}">${esc(LOC_NAME[l]||l||"—")}</span>`).join("");
   const opt = (id, key) => {
     const vals = [...new Set(ALL.map(r=>r[key]).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"es"));
-    $(id).innerHTML = `<option value="">Все</option>` + vals.map(v=>`<option ${S[key]===v?"selected":""}>${esc(v)}</option>`).join("");
+    $(id).innerHTML = `<option value="">${L("stAll")}</option>` + vals.map(v=>`<option ${S[key]===v?"selected":""}>${esc(v)}</option>`).join("");
   };
   opt("dep","dep"); opt("puesto","puesto");
 }
@@ -264,12 +349,12 @@ function render(){
   const today = new Date().toISOString().slice(0,10), ym = today.slice(0,7);
   const act = base.filter(r=>r.estado==="activo").length;
   const kp = [
-    [rows.length, S.asof ? `числились на ${fmt(S.asof)}` : "в выборке"],
-    [act, "работают сейчас"],
-    [base.filter(r=>r.estado==="proceso").length, "в оформлении"],
-    [base.filter(r=>r.estado==="baja").length, "уволены (всего)"],
-    [base.filter(r=>r.alta.startsWith(ym)).length, "приняты в этом месяце"],
-    [base.filter(r=>r.baja.startsWith(ym)).length, "уволены в этом месяце"],
+    [rows.length, S.asof ? `${L("onDate")} ${fmt(S.asof)}` : L("inSel")],
+    [act, L("working")],
+    [base.filter(r=>r.estado==="proceso").length, L("inProc")],
+    [base.filter(r=>r.estado==="baja").length, L("firedTotal")],
+    [base.filter(r=>r.alta.startsWith(ym)).length, L("hiredMonth")],
+    [base.filter(r=>r.baja.startsWith(ym)).length, L("firedMonth")],
   ];
   $("kpis").innerHTML = kp.map(([v,l])=>`<div class="card kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
   renderPivot(rows); renderMoves(base); renderList(rows);
@@ -283,17 +368,17 @@ function renderPivot(rows){
   const locs = [...new Set([...LOCS.filter(l=>rows.some(r=>r.local===l)), ...rows.map(r=>r.local)])];
   const deps = [...new Set(rows.map(r=>r.dep||"—"))].sort((a,b)=>a.localeCompare(b,"es"));
   const cnt = (l,d) => rows.filter(r=>r.local===l && (r.dep||"—")===d).length;
-  PIVOT = [["Departamento", ...locs.map(l=>LOC_NAME[l]||l||"—"), "Итого"]];
-  let h = `<thead><tr><th>Departamento</th>${locs.map(l=>`<th class="n">${esc(LOC_NAME[l]||l||"—")}</th>`).join("")}<th class="n">Итого</th></tr></thead><tbody>`;
+  PIVOT = [[L("dep"), ...locs.map(l=>LOC_NAME[l]||l||"—"), L("total")]];
+  let h = `<thead><tr><th>${L("dep")}</th>${locs.map(l=>`<th class="n">${esc(LOC_NAME[l]||l||"—")}</th>`).join("")}<th class="n">${L("total")}</th></tr></thead><tbody>`;
   deps.forEach(d=>{
     const c = locs.map(l=>cnt(l,d)), s = c.reduce((a,b)=>a+b,0);
     PIVOT.push([d, ...c, s]);
     h += `<tr><td class="pc" data-d="${esc(d)}">${esc(d)}</td>${c.map((v,k)=>`<td class="n pc" data-l="${esc(locs[k])}" data-d="${esc(d)}">${v||'<span class="muted">·</span>'}</td>`).join("")}<td class="n pc" data-d="${esc(d)}"><b>${s}</b></td></tr>`;
   });
   const tot = locs.map(l=>rows.filter(r=>r.local===l).length);
-  PIVOT.push(["Итого", ...tot, rows.length]);
-  h += `<tr class="tot"><td>Итого</td>${tot.map(v=>`<td class="n">${v}</td>`).join("")}<td class="n">${rows.length}</td></tr></tbody>`;
-  $("pivot").innerHTML = rows.length ? h : `<tr><td class="muted">Нет данных под фильтр</td></tr>`;
+  PIVOT.push([L("total"), ...tot, rows.length]);
+  h += `<tr class="tot"><td>${L("total")}</td>${tot.map(v=>`<td class="n">${v}</td>`).join("")}<td class="n">${rows.length}</td></tr></tbody>`;
+  $("pivot").innerHTML = rows.length ? h : `<tr><td class="muted">${L("noData")}</td></tr>`;
 }
 
 function renderMoves(base){
@@ -303,7 +388,7 @@ function renderMoves(base){
   const MN = ["янв","фев","мар","апр","май","июн","июл","авг","сен","окт","ноя","дек"];
   const data = months.map(m=>({m, a:base.filter(r=>r.alta.startsWith(m)).length, b:base.filter(r=>r.baja.startsWith(m)).length}));
   const max = Math.max(1, ...data.map(x=>Math.max(x.a,x.b)));
-  let h = `<thead><tr><th>Месяц</th><th>Принято</th><th></th><th>Уволено</th><th></th></tr></thead><tbody>`;
+  let h = `<thead><tr><th>${L("month")}</th><th>${L("hired")}</th><th></th><th>${L("fired")}</th><th></th></tr></thead><tbody>`;
   data.forEach(x=>{
     const [y,mm] = x.m.split("-");
     h += `<tr><td>${MN[+mm-1]} ${y}</td>
@@ -313,18 +398,18 @@ function renderMoves(base){
   $("moves").innerHTML = h + "</tbody>";
 }
 
-const COLS = [["name","Имя"],["local","Локаль"],["dep","Departamento"],["puesto","Puesto"],["horas","Часы"],["alta","Alta"],["baja","Baja"],["estado","Статус"]];
+const COLS = () => [["name",L("cName")],["local",L("cLocal")],["dep",L("dep")],["puesto",L("cPuesto")],["horas",L("cHoras")],["alta","Alta"],["baja","Baja"],["estado",L("cEstado")]];
 function renderList(rows){
   rows = rows.slice().sort((a,b)=>String(a[S.sort]||"").localeCompare(String(b[S.sort]||""),"es")*S.dir);
   const pages = Math.max(1, Math.ceil(rows.length/PAGE));
   if(S.page >= pages) S.page = 0;
   const part = rows.slice(S.page*PAGE, S.page*PAGE+PAGE);
-  $("listTitle").textContent = `Сотрудники · ${rows.length}`;
-  let h = `<thead><tr>${COLS.map(([k,l])=>`<th data-k="${k}">${l}${S.sort===k?(S.dir>0?" ▲":" ▼"):""}</th>`).join("")}</tr></thead><tbody>`;
+  $("listTitle").textContent = `${L("employees")} · ${rows.length}`;
+  let h = `<thead><tr>${COLS().map(([k,l])=>`<th data-k="${k}">${l}${S.sort===k?(S.dir>0?" ▲":" ▼"):""}</th>`).join("")}</tr></thead><tbody>`;
   part.forEach(r=>{
-    h += `<tr class="click" data-row="${r.row}"><td>${esc(r.name)}</td><td>${esc(LOC_NAME[r.local]||r.local)}</td><td>${esc(r.dep)}</td><td>${esc(r.puesto)}</td><td>${esc(r.horas)}</td><td>${fmt(r.alta)||(r.inicio?'<span class="muted">план '+fmt(r.inicio)+'</span>':'')}</td><td>${fmt(r.baja)}</td><td>${TAG(r)}</td></tr>`;
+    h += `<tr class="click" data-row="${r.row}"><td>${esc(r.name)}</td><td>${esc(LOC_NAME[r.local]||r.local)}</td><td>${esc(r.dep)}</td><td>${esc(r.puesto)}</td><td>${esc(r.horas)}</td><td>${fmt(r.alta)||(r.inicio?'<span class="muted">'+L("plan")+' '+fmt(r.inicio)+'</span>':'')}</td><td>${fmt(r.baja)}</td><td>${TAG(r)}</td></tr>`;
   });
-  $("list").innerHTML = rows.length ? h+"</tbody>" : `<tr><td class="muted">Никого под этот фильтр</td></tr>`;
+  $("list").innerHTML = rows.length ? h+"</tbody>" : `<tr><td class="muted">${L("nobody")}</td></tr>`;
   $("pager").innerHTML = pages>1 ? `<button class="btn" data-p="-1" ${S.page===0?"disabled":""}>←</button><span class="sub">${S.page+1} / ${pages}</span><button class="btn" data-p="1" ${S.page>=pages-1?"disabled":""}>→</button>` : "";
 }
 
@@ -337,11 +422,11 @@ function card(r){
   $("dlgBody").innerHTML = `<div class="row" style="margin:0"><h2 style="margin:0;font-size:18px">${esc(r.name)}</h2>
     <button class="btn" onclick="dlg.close()">✕</button></div>
     ${TAG(r)}
-    <span class="sub">· ${r.row>0 ? "строка "+r.row+" в Registro" : "в чек-листе HR, этап: "+esc(r.etapa||"")}</span>
-    <div class="row" style="margin-top:10px"><button class="btn primary" id="docsBtn">📁 Документы сотрудника</button></div>
+    <span class="sub">· ${r.row>0 ? L("rowIn")+" "+r.row+" "+L("inRegistro") : L("inChecklist")+" "+esc(r.etapa||"")}</span>
+    <div class="row" style="margin-top:10px"><button class="btn primary" id="docsBtn">${L("docsBtn")}</button></div>
     <div id="docsBox"></div>
     <dl>${f.filter(x=>x[1]).map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}
-    ${r.contrato?`<dt>Контракт</dt><dd><a href="${esc(r.contrato)}" target="_blank" rel="noopener">папка на Диске ↗</a></dd>`:""}</dl>`;
+    ${r.contrato?`<dt>Контракт</dt><dd><a href="${esc(r.contrato)}" target="_blank" rel="noopener">${L("folder")}</a></dd>`:""}</dl>`;
   $("docsBtn").onclick = ()=>showDocs(r.name);
   $("dlg").showModal();
 }
@@ -382,29 +467,36 @@ function setTab(t){
   if(t === "sol") loadSol();
 }
 $("tabs").onclick = e=>{const b=e.target.closest("button"); if(b) setTab(b.dataset.t);};
+$("langSeg").onclick = e=>{
+  const b = e.target.closest("button"); if(!b) return;
+  LANG = b.dataset.l; try{ localStorage.setItem("hrLang", LANG); }catch(_){}
+  applyLang();
+  if(ALL.length) render();
+  if(S.tab === "sol"){ const on = document.querySelector("#solKinds .chip.on"); if(on) solForm(on.dataset.k); loadSol(); }
+};
 
 // ---------- формы заявок ----------
 const SEL = {locales:[], puestos:[], horas:[], periodos:[], motivos:[]};
 const FORMS = {
-  alta: {title:"🟢 Alta — новый сотрудник", fields:[
+  alta: {title:"kAlta", fields:[
     ["local","Local","sel:locales",1],["nombre","Nombre","text",1],["apellido","Apellido","text",1],
     ["nacimiento","Fecha de nacimiento","date",0],["nie","NIE/TIE","text",1],
     ["domicilio","Domicilio","text",1],["cp","Código postal","text",0],
     ["iban","IBAN","text",1],["email","Correo electrónico","text",1],["telefono","Teléfono","text",1],
     ["nss","Numero seguridad social","text",1],["puesto","Título profesional","sel:puestos",1],
     ["horas","Número de horas","sel:horas",1],["inicio","Fecha de inicio","date",1]]},
-  baja: {title:"🔴 Baja — увольнение", fields:[
+  baja: {title:"kBaja", fields:[
     ["nombre","Nombre y Apellidos","text",1],["local","Local","sel:locales",1],
     ["puesto","Puesto","sel:puestos",0],["responsable","Persona responsable","text",0],
     ["fecha","Último día de trabajo","date",1],["periodo","Período de despido","sel:periodos",1],
     ["motivo","Motivo del despido","sel:motivos",1],["vacaciones","Vacaciones, дней","text",0]]},
-  medico: {title:"🏥 Seguro médico", fields:[
+  medico: {title:"kMedico", fields:[
     ["nombre","Nombre y Apellidos","text",1],["local","Local","sel:locales",1],
     ["puesto","Título profesional","sel:puestos",0],["nacimiento","Fecha de nacimiento","date",0],
     ["nie","NIE/TIE","text",1],["domicilio","Domicilio / Código postal","text",0],
     ["iban","IBAN","text",0],["email","Correo electrónico","text",0],
     ["telefono","Teléfono","text",0],["nss","Numero seguridad social","text",0]]},
-  cambio: {title:"🔁 Cambio — изменение контракта", fields:[
+  cambio: {title:"kCambio", fields:[
     ["nombre","Nombre y Apellidos","text",1],["responsable","Persona responsable","text",0],
     ["local_antes","Local antes","sel:locales",1],["local_despues","Local después","sel:locales",0],
     ["horas_antes","Horas antes","sel:horas",0],["horas_despues","Horas después","sel:horas",0],
@@ -431,11 +523,11 @@ function solForm(kind){
     }
     return `<label><span${cls}>${esc(l)}</span><input data-f="${k}" type="${t==="date"?"date":"text"}"></label>`;
   };
-  $("solForm").innerHTML = `<h3 style="margin:14px 0 0">${f.title}</h3>
+  $("solForm").innerHTML = `<h3 style="margin:14px 0 0">${L(f.title)}</h3>
     <div class="form">${f.fields.map(fld).join("")}
-      <label class="wide"><span>Комментарий</span><input data-f="comentario" placeholder="необязательно"></label></div>
-    <div class="row" style="margin-top:12px"><span class="sub">Поля со ★ обязательны</span>
-      <button class="btn primary" id="solSend">Отправить заявку</button></div>
+      <label class="wide"><span>${L("comment")}</span><input data-f="comentario" placeholder="${L("optional")}"></label></div>
+    <div class="row" style="margin-top:12px"><span class="sub">${L("reqNote")}</span>
+      <button class="btn primary" id="solSend">${L("send")}</button></div>
     <div id="solMsg"></div>`;
   $("solSend").onclick = ()=>solSend(kind);
 }
@@ -447,7 +539,7 @@ async function solSend(kind){
     if(el.type === "date" && v) v = v.split("-").reverse().join(".");
     if(v) datos[el.dataset.f] = v;
   });
-  const btn = $("solSend"); btn.disabled = true; btn.textContent = "Отправляю…";
+  const btn = $("solSend"); btn.disabled = true; btn.textContent = L("sending");
   try{
     const r = await fetch("/hr/api/sol/create",{method:"POST",credentials:"same-origin",
       headers:Object.assign({"Content-Type":"application/json"},AUTH()),
@@ -455,24 +547,24 @@ async function solSend(kind){
     const d = await r.json();
     if(d.error){ $("solMsg").innerHTML = `<div class="bad">${esc(d.error)}</div>`; }
     else{
-      $("solMsg").innerHTML = `<div class="ok">Заявка отправлена${d.foto?". Бот попросит в Telegram фото NIE/TIE":""}.</div>`;
+      $("solMsg").innerHTML = `<div class="ok">${L("sentOk")}${d.foto?L("sentFoto"):""}.</div>`;
       $("solForm").querySelectorAll("[data-f]").forEach(el=>el.value="");
       loadSol();
     }
   }catch(e){ $("solMsg").innerHTML = `<div class="bad">Не отправилось: ${esc(e.message)}</div>`; }
-  btn.disabled = false; btn.textContent = "Отправить заявку";
+  btn.disabled = false; btn.textContent = L("send");
 }
 
 const SOL_NAME = {alta:"🟢 Alta", baja:"🔴 Baja", medico:"🏥 Médico", cambio:"🔁 Cambio"};
 async function loadSol(){
   await solMeta();
-  $("solList").innerHTML = `<tr><td class="muted">Загрузка…</td></tr>`;
+  $("solList").innerHTML = `<tr><td class="muted">${L("loading")}</td></tr>`;
   try{
     const r = await fetch("/hr/api/sol/mine",{credentials:"same-origin",headers:AUTH()});
     const d = await r.json();
     const rows = d.solicitudes || [];
-    if(!rows.length){ $("solList").innerHTML = `<tr><td class="muted">Заявок пока нет</td></tr>`; return; }
-    $("solList").innerHTML = `<thead><tr><th>Дата</th><th>Тип</th><th>Сотрудник</th><th>Локаль</th><th>Автор</th><th>Статус</th></tr></thead><tbody>`
+    if(!rows.length){ $("solList").innerHTML = `<tr><td class="muted">${L("noSol")}</td></tr>`; return; }
+    $("solList").innerHTML = `<thead><tr><th>${L("colDate")}</th><th>${L("colType")}</th><th>${L("colEmp")}</th><th>${L("cLocal")}</th><th>${L("colAuthor")}</th><th>${L("cEstado")}</th></tr></thead><tbody>`
       + rows.map(x=>`<tr><td>${esc(x.fecha)}</td><td>${SOL_NAME[x.tipo]||x.tipo}</td><td>${esc(x.nombre)}</td><td>${esc(x.local)}</td><td>${esc(x.autor)}</td><td>${esc(x.estado)}</td></tr>`).join("")
       + `</tbody>`;
   }catch(e){ $("solList").innerHTML = `<tr><td class="bad">${esc(e.message)}</td></tr>`; }
@@ -488,36 +580,45 @@ $("solReload").onclick = loadSol;
 // ---------- досье сотрудника ----------
 async function showDocs(name){
   const box = $("docsBox"); if(!box) return;
-  box.innerHTML = `<div class="sub">Собираю документы…</div>`;
+  box.innerHTML = `<div class="sub">${L("docsLoading")}</div>`;
   try{
     const r = await fetch("/hr/api/docs?name="+encodeURIComponent(name),{credentials:"same-origin",headers:AUTH()});
     const d = await r.json();
     if(d.error) throw new Error(d.error);
     let h = "";
+    const dr = d.drive || {};
+    if((dr.files||[]).length){
+      h += `<div class="docsec"><h3>${L("docsDrive")} · ${esc(dr.folder||"")} <a href="${esc(dr.link||"")}" target="_blank" rel="noopener">${L("open")}</a></h3>` +
+        dr.files.map(f=>`<div class="row" style="margin:4px 0"><span>${esc(f.name)} <span class="sub">${esc(f.fecha||"")}</span></span>
+          <button class="btn" data-drive="${esc(f.id)}" data-name="${esc(f.name)}">${L("toTg")}</button></div>`).join("") + `</div>`;
+    }
     if((d.mails||[]).length){
-      h += `<div class="docsec"><h3>Документы из почты</h3>` + d.mails.map(m=>
+      h += `<div class="docsec"><h3>${L("docsMail")}</h3>` + d.mails.map(m=>
         `<div class="row" style="margin:4px 0"><span>${esc(m.tipo||"—")} · ${esc(m.file)} <span class="sub">${esc(m.fecha)}</span></span>
-         <button class="btn" data-msg="${esc(m.msg)}" data-file="${esc(m.file)}">📥 в Telegram</button></div>`).join("") + `</div>`;
+         <button class="btn" data-msg="${esc(m.msg)}" data-file="${esc(m.file)}">${L("toTg")}</button></div>`).join("") + `</div>`;
     }
     if((d.solicitudes||[]).length){
-      h += `<div class="docsec"><h3>Заявки</h3>` + d.solicitudes.map(x=>
+      h += `<div class="docsec"><h3>${L("docsSol")}</h3>` + d.solicitudes.map(x=>
         `<div style="margin:4px 0">${SOL_NAME[x.tipo]||x.tipo} · ${esc(x.fecha)} · ${esc(x.autor)} · ${esc(x.estado||"новая")}</div>`).join("") + `</div>`;
     }
     const fi = d.ficha || {};
     if(Object.keys(fi).length){
-      h += `<div class="docsec"><h3>Анкета Solicitud</h3><dl>` +
+      h += `<div class="docsec"><h3>${L("docsFicha")}</h3><dl>` +
         Object.entries(fi).filter(([k,v])=>!/^http/.test(v)).map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("") +
-        Object.entries(fi).filter(([k,v])=>/^http/.test(v)).map(([k,v])=>`<dt>${esc(k)}</dt><dd><a href="${esc(v)}" target="_blank" rel="noopener">открыть ↗</a></dd>`).join("") +
+        Object.entries(fi).filter(([k,v])=>/^http/.test(v)).map(([k,v])=>`<dt>${esc(k)}</dt><dd><a href="${esc(v)}" target="_blank" rel="noopener">${L("open")}</a></dd>`).join("") +
         `</dl></div>`;
     }
-    box.innerHTML = h || `<div class="sub">Документов пока нет.</div>`;
+    box.innerHTML = h || `<div class="sub">${L("docsNone")}</div>`;
     box.onclick = async ev=>{
-      const b = ev.target.closest("button[data-msg]"); if(!b) return;
-      b.disabled = true; b.textContent = "Отправляю…";
-      await fetch("/hr/api/docs/send",{method:"POST",credentials:"same-origin",
+      const b = ev.target.closest("button[data-msg],button[data-drive]"); if(!b) return;
+      b.disabled = true; b.textContent = L("sending");
+      const url = b.dataset.drive ? "/hr/api/drive/send" : "/hr/api/docs/send";
+      const body = b.dataset.drive ? {id:b.dataset.drive, name:b.dataset.name}
+                                   : {msg:b.dataset.msg, file:b.dataset.file};
+      await fetch(url,{method:"POST",credentials:"same-origin",
         headers:Object.assign({"Content-Type":"application/json"},AUTH()),
-        body:JSON.stringify({msg:b.dataset.msg,file:b.dataset.file})});
-      b.textContent = "✓ ушло в Telegram";
+        body:JSON.stringify(body)});
+      b.textContent = L("sent");
     };
   }catch(e){ box.innerHTML = `<div class="bad">${esc(e.message)}</div>`; }
 }
@@ -529,6 +630,7 @@ $("csvPivot").onclick = ()=>csv(PIVOT, `plantilla_${S.asof||new Date().toISOStri
 $("csvList").onclick = ()=>csv([["Nombre","Local","Departamento","Puesto","Horas","Alta","Baja","Estado","Tipo","NIE","Teléfono","Email"],
   ...filtered().map(r=>[r.name,LOC_NAME[r.local]||r.local,r.dep,r.puesto,r.horas,fmt(r.alta),fmt(r.baja),r.estado,r.tipo,r.nie,r.tel,r.email])],
   `empleados_${new Date().toISOString().slice(0,10)}.csv`);
+applyLang();
 load(false);
 </script>
 </body>

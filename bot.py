@@ -271,6 +271,7 @@ HR_WS = "HR"
 MAIL_WS = "MailContracts"
 EMPLOYEES_WS = "Employees"
 EMPLEADOS_REQ_WS = "EmpleadosRequests"
+SKIP_WS = "HRSkip"          # заявки Solicitud, убранные из «Новых» вручную
 
 HEADERS = {
     USERS_WS:   ["ID", "Имя", "Роль", "Отделы", "Статус", "Язык"],
@@ -290,6 +291,7 @@ HEADERS = {
     MAIL_WS:    ["MessageID", "Дата", "От кого", "Тема", "Вложение", "ФИО", "Тип"],
     EMPLOYEES_WS: ["ФИО", "Локаль", "Должность", "Дата заявки",
                    "Тип файла", "Имя файла", "GmailMsgID", "Дата добавления", "RowKey"],
+    SKIP_WS:    ["RowKey", "ФИО", "Кто убрал", "Дата"],
     EMPLEADOS_REQ_WS: ["Категория", "Текст", "Автор", "ChatID", "MessageID",
                         "FileID", "Дата", "Статус"],
 }
@@ -637,10 +639,23 @@ def match_locale_code(text: str) -> str:
     return ""
 
 
+def skipped_row_keys() -> set:
+    """Заявки, которые убрали из «Новых» вручную (лист HRSkip)."""
+    return {str(r.get("RowKey")).strip() for r in rows(SKIP_WS, force=True)
+            if str(r.get("RowKey", "")).strip()}
+
+
+def skip_applicant(row_idx: int, fio: str, who: str):
+    ws(SKIP_WS).append_row([str(row_idx), fio, who,
+                            now_local().strftime("%d.%m.%Y %H:%M")],
+                           value_input_option="RAW")
+    drop_cache(SKIP_WS)
+
+
 def new_applicants(loc: str = None):
-    """Заявки из формы, ещё не добавленные в чек-лист HR. Можно отфильтровать
-    по локали (код из LOCALES)."""
-    tracked = tracked_row_keys()
+    """Заявки из формы, ещё не добавленные в чек-лист HR и не скрытые вручную.
+    Можно отфильтровать по локали (код из LOCALES)."""
+    tracked = tracked_row_keys() | skipped_row_keys()
     out = []
     for idx, r in enumerate(applicants_rows(), start=2):
         key = str(idx)
@@ -1038,9 +1053,13 @@ async def gmail_watch_loop():
                     try:
                         await bot.send_message(
                             pid,
-                            "⚠️ Доступ к почте (sl.valencia.resta@gmail.com) для проверки "
-                            "контрактов истёк — нужна повторная авторизация через OAuth "
-                            "Playground (та же процедура, что настраивали).",
+                            "⚠️ Доступ к почте (sl.valencia.resta@gmail.com) истёк.\n\n"
+                            "Причина: приложение в Google Cloud в режиме <b>Testing</b> — "
+                            "там refresh token живёт 7 дней.\n"
+                            "Чтобы это было в последний раз: Google Cloud Console → "
+                            "APIs &amp; Services → OAuth consent screen → <b>Publish app</b> "
+                            "(Production), затем один раз получить новый токен и обновить "
+                            "<code>GMAIL_REFRESH_TOKEN</code> в Railway.",
                         )
                     except Exception:
                         pass
@@ -1081,9 +1100,13 @@ async def gmail_diag():
                     try:
                         await bot.send_message(
                             pid,
-                            "⚠️ Доступ к почте (sl.valencia.resta@gmail.com) для проверки "
-                            "контрактов истёк — нужна повторная авторизация через OAuth "
-                            "Playground (та же процедура, что настраивали).",
+                            "⚠️ Доступ к почте (sl.valencia.resta@gmail.com) истёк.\n\n"
+                            "Причина: приложение в Google Cloud в режиме <b>Testing</b> — "
+                            "там refresh token живёт 7 дней.\n"
+                            "Чтобы это было в последний раз: Google Cloud Console → "
+                            "APIs &amp; Services → OAuth consent screen → <b>Publish app</b> "
+                            "(Production), затем один раз получить новый токен и обновить "
+                            "<code>GMAIL_REFRESH_TOKEN</code> в Railway.",
                         )
                     except Exception:
                         pass
@@ -1612,6 +1635,22 @@ try:
 except Exception as _e:
     log.error("solicitudes не подключён: %s", _e, exc_info=True)
 
+# Папки сотрудников с Google Диска в карточке архива.
+try:
+    import sys as _sys
+    import drive_docs
+    drive_docs.setup(dp, _sys.modules[__name__])
+except Exception as _e:
+    log.error("drive_docs не подключён: %s", _e, exc_info=True)
+
+# Восстановление архива по документам с Диска (/restaurar).
+try:
+    import sys as _sys
+    import drive_import
+    drive_import.setup(dp, _sys.modules[__name__])
+except Exception as _e:
+    log.error("drive_import не подключён: %s", _e, exc_info=True)
+
 # Расчёт остатка отпуска (/vacaciones).
 try:
     import sys as _sys
@@ -1920,6 +1959,8 @@ async def cb_dept(c: CallbackQuery):
                 text=f"🗄 Архив по почте ({len(rows(MAIL_WS))})", callback_data="hrarch")])
             kb.append([InlineKeyboardButton(text="🌐 Архив сотрудников (веб)", callback_data="hrweb")])
             kb.append([InlineKeyboardButton(text="🏖 Расчёт отпуска", callback_data="vac")])
+            kb.append([InlineKeyboardButton(text="🗂 Восстановить архив с Диска",
+                                            callback_data="drvimp")])
         else:
             # Управляющему — только подача заявок через сайт.
             kb.append([InlineKeyboardButton(text="📝 Заявки (Alta / Baja / Médico / Cambio)",
@@ -2518,10 +2559,58 @@ async def cb_hr_new_loc(c: CallbackQuery):
         for idx, r in items[:40]:
             name = f"{r.get('Nombre', '')} {r.get('Apellido', '')}".strip()
             kb.append([InlineKeyboardButton(text=name[:60], callback_data=f"hrnd:{idx}")])
+        kb.append([InlineKeyboardButton(
+            text="🧹 Скрыть старые (оставить 20 новых)", callback_data=f"hrclean:{loc}")])
         kb.append([InlineKeyboardButton(text=t("refresh", lang), callback_data=c.data)])
         kb.append([InlineKeyboardButton(text=t("back", lang), callback_data="bk")])
     await take_over(c, text, InlineKeyboardMarkup(inline_keyboard=kb))
     await c.answer()
+
+
+@dp.callback_query(F.data.startswith("hrclean:"))
+async def cb_hr_clean(c: CallbackQuery):
+    """Убирает из «Новых заявок» всё, кроме 20 последних: старые анкеты
+    копились с момента запуска формы и мешали видеть свежие."""
+    u = get_user(c.from_user.id)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    loc = c.data.split(":")[1]
+    items = new_applicants(loc=loc if loc != "-" else None)
+    old = items[:-20] if len(items) > 20 else []
+    if not old:
+        await c.answer("Нечего убирать — заявок 20 или меньше", show_alert=True)
+        return
+    await c.answer(f"Убираю {len(old)}…")
+    author = c.from_user.full_name if c.from_user else "—"
+    for idx, r in old:
+        fio = f"{r.get('Nombre', '')} {r.get('Apellido', '')}".strip()
+        try:
+            sheets_write_retry(skip_applicant, idx, fio, author)
+        except Exception as e:
+            log.error("не убрал заявку %s: %s", idx, e)
+        await asyncio.sleep(0.3)
+    await bot.send_message(c.from_user.id,
+                           f"🧹 Убрано из «Новых заявок»: <b>{len(old)}</b>. "
+                           f"Они остались в таблице анкет, просто не мешают в боте.")
+    await route(c, f"hrn:{loc}")
+
+
+@dp.callback_query(F.data.startswith("hrskip:"))
+async def cb_hr_skip_one(c: CallbackQuery):
+    u = get_user(c.from_user.id)
+    if not is_patron(u):
+        await c.answer(t("only_patron", ulang(u)), show_alert=True)
+        return
+    idx = int(c.data.split(":")[1])
+    try:
+        r = applicants_rows()[idx - 2]
+        fio = f"{r.get('Nombre', '')} {r.get('Apellido', '')}".strip()
+    except Exception:
+        fio = ""
+    skip_applicant(idx, fio, c.from_user.full_name if c.from_user else "—")
+    await c.answer("Заявка убрана из «Новых»")
+    await nav_back(c)
 
 
 @dp.callback_query(F.data.startswith("hrnd:"))
@@ -2549,6 +2638,7 @@ async def cb_hr_new_detail(c: CallbackQuery):
         else:
             text += f"\n\n📎 <a href=\"{link}\">Фото документа (открыть по ссылке)</a>"
     kb = [[InlineKeyboardButton(text="➕ Добавить в чек-лист", callback_data=f"hradd:{idx}")],
+          [InlineKeyboardButton(text="🚫 Убрать из «Новых»", callback_data=f"hrskip:{idx}")],
           [InlineKeyboardButton(text=t("back", ulang(u)), callback_data="bk")]]
     await take_over(c, text, InlineKeyboardMarkup(inline_keyboard=kb), photo=photo)
     await c.answer()
@@ -3006,8 +3096,11 @@ async def cb_hr_mail_check(c: CallbackQuery):
         if not diag["auth_ok"]:
             await bot.send_message(
                 c.from_user.id,
-                "⚠️ Не удалось подключиться к почте — доступ не работает "
-                "(нужна повторная авторизация через OAuth Playground).",
+                "⚠️ Не удалось подключиться к почте.\n\n"
+                "Скорее всего истёк refresh token: приложение в Google Cloud "
+                "в режиме Testing, там токен живёт 7 дней. Лечится один раз — "
+                "OAuth consent screen → Publish app (Production) и новый токен "
+                "в <code>GMAIL_REFRESH_TOKEN</code>.",
             )
         elif diag["count"] == 0:
             await bot.send_message(
@@ -3360,6 +3453,7 @@ ROUTES = [
     ("inv",   lambda cc: cb_invoices(cc)),
     ("wo:",   lambda cc: cb_writeoffs_loc(cc)),
     ("wo",    lambda cc: cb_writeoffs(cc)),
+    ("hrclean:", lambda cc: cb_hr_clean(cc)),
     ("hrn:",  lambda cc: cb_hr_new_loc(cc)),
     ("hrnd:", lambda cc: cb_hr_new_detail(cc)),
     ("hrn",   lambda cc: cb_hr_new(cc)),

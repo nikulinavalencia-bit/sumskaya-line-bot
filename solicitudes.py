@@ -234,7 +234,15 @@ def dossier(name: str) -> dict:
                              "estado": str(r.get("Статус", "")).strip(),
                              "datos": {k: str(v).strip() for k, v in r.items() if str(v).strip()}})
     sols.sort(key=lambda x: x["fecha"], reverse=True)
-    return {"mails": mails, "ficha": ficha, "solicitudes": sols}
+
+    drive = {}
+    try:
+        import drive_docs
+        drive = drive_docs.docs_for(name)
+    except Exception as e:
+        log.warning("solicitudes: папка с Диска не подтянулась: %s", e)
+
+    return {"mails": mails, "ficha": ficha, "solicitudes": sols, "drive": drive}
 
 
 # ---------------- ВЕБ-МАРШРУТЫ ----------------
