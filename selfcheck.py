@@ -21,6 +21,12 @@ from aiogram.types import (Message, BotCommand, BotCommandScopeDefault,
 
 log = logging.getLogger("selfcheck")
 
+try:
+    import ritmo_bridge
+except Exception as _e:
+    ritmo_bridge = None
+    log.warning("ritmo_bridge не подключён: %s", _e)
+
 core = None
 STARTED_AT = None
 
@@ -135,6 +141,8 @@ def build_checks():
          lambda: bool(getattr(sys.modules.get("drive_docs"), "M", None))
          and bool(os.environ.get("DRIVE_ROOT_ID"))),
         ("📧 Почта Histora по IMAP (пароль приложения)", _imap_on),
+        ("🔗 Ritmo OPS подключён (мост фактур из групп)",
+         lambda: bool(getattr(sys.modules.get("ritmo_bridge"), "core", None))),
     ]
 
 
@@ -261,4 +269,9 @@ def setup(dp, core_module):
         dp.startup.register(_on_startup)
     except Exception as ex:
         log.warning("startup-хук недоступен: %s", ex)
+    if ritmo_bridge:
+        try:
+            ritmo_bridge.setup(dp, core_module)
+        except Exception as ex:
+            log.error("ritmo_bridge.setup() не запустился: %s", ex, exc_info=True)
     log.info("selfcheck подключён: /version")
