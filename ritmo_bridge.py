@@ -44,7 +44,7 @@ from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKe
 
 log = logging.getLogger("ritmo_bridge")
 
-VERSION = "ritmo_bridge 1.2 · 24.09.2026"
+VERSION = "ritmo_bridge 1.3 · 24.09.2026"
 ALBUM_WAIT = 6          # сек — ждём остальные фото альбома
 MARK_OK = "🔗 Ritmo OPS"        # отметка в листе Docs вместо «отправлено в Билз»
 MARK_BAD = "⚠️ Ritmo OPS не принял"
@@ -56,7 +56,8 @@ _meta = {}              # (chat_id, msg_id) -> {"mg": media_group_id, "mime": ..
 _albums = {}            # media_group_id -> {"items": [...], "task": Task}
 _last_saved = {"loc": "", "typ": ""}
 _seen_wo = set()          # сообщения списаний, уже отправленные в Ritmo OPS
-_stats = {"sent": 0, "failed": 0, "wo": 0, "wo_failed": 0, "tr": 0, "tr_failed": 0, "last_error": ""}
+_stats = {"sent": 0, "failed": 0, "wo": 0, "wo_failed": 0, "tr": 0, "tr_failed": 0,
+          "pr": 0, "pr_failed": 0, "last_error": ""}
 
 
 # ---------------- НАСТРОЙКИ ----------------
@@ -173,6 +174,27 @@ TR_WORDS = ("передача", "передали", "передаём", "пер�
             "traspaso", "traslado", "para ", "в рейну", "в францию", "в бакери", "в бойбой")
 
 
+PR_WORDS = ("приготов", "испек", "выпек", "напек", "производ", "произвел", "произвели",
+            "producci", "elabora", "horneado")
+
+
+def _is_production(text: str) -> bool:
+    first = " ".join(str(text or "").lower().split("\n")[0].split())
+    return any(w in first for w in PR_WORDS)
+
+
+async def send_production(loc: str, text: str, author: str, ref: str) -> dict:
+    """Акт приготовления: изделия пекарни и кухни."""
+    res = await asyncio.to_thread(_post, loc, [], author, ref, {"kind": "production", "text": text})
+    if res.get("ok"):
+        _stats["pr"] += 1
+    else:
+        _stats["pr_failed"] += 1
+        _stats["last_error"] = str(res.get("error"))[:300]
+        log.error("ritmo_bridge: приготовление не ушло в Ritmo OPS: %s", res.get("error"))
+    return res
+
+
 def _is_transfer(text: str) -> bool:
     t = " " + " ".join(str(text or "").lower().split())
     first = t.strip().split("\n")[0]
@@ -226,10 +248,14 @@ async def _writeoff_watch(m):
         return
     author = m.from_user.full_name if m.from_user else "—"
     ref = f"tg:{m.chat.id}:{m.message_id}"
-    move = _is_transfer(text)
-    res = await (send_transfer(loc, text, author, ref) if move else send_writeoff(loc, text, author, ref))
+    if _is_production(text):
+        kind, res = "Акт приготовления", await send_production(loc, text, author, ref)
+    elif _is_transfer(text):
+        kind, res = "Расходная", await send_transfer(loc, text, author, ref)
+    else:
+        kind, res = "Списание", await send_writeoff(loc, text, author, ref)
     if not res.get("ok"):
-        what = "Передача" if move else "Списание"
+        what = kind
         for pid in core.patrons():
             try:
                 await core.bot.send_message(
@@ -387,7 +413,8 @@ def status_text() -> str:
                      f"(нужно: {', '.join(core.LOCALES)})")
     lines.append(f"Фактур отправлено с запуска: {_stats['sent']}, не ушло: {_stats['failed']}")
     lines.append(f"Сообщений списания: {_stats['wo']}, не ушло: {_stats['wo_failed']}")
-    lines.append(f"Передач между локалями: {_stats['tr']}, не ушло: {_stats['tr_failed']}")
+    lines.append(f"Расходных между локалями: {_stats['tr']}, не ушло: {_stats['tr_failed']}")
+    lines.append(f"Актов приготовления: {_stats['pr']}, не ушло: {_stats['pr_failed']}")
     if _stats["last_error"]:
         lines.append(f"Последняя ошибка: <code>{core.html_lib.escape(_stats['last_error'])}</code>")
     lines.append("")
