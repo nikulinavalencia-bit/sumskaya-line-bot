@@ -38,7 +38,7 @@ from datetime import datetime, date
 
 log = logging.getLogger("sumskaya.hr_web")
 
-VERSION = "hr_web 1.4 · 23.09.2026"
+VERSION = "hr_web 1.5 · 24.09.2026"
 
 M = None          # модуль bot.py — берём оттуда таблицы, роли, bot
 _runner = None
@@ -160,7 +160,16 @@ FIELDS = [
     ("iban",      ["iban"]),
     ("domicilio", ["domicilio"]),
     ("contrato",  ["contrato"]),
+    ("nss",       ["numero seguridad social", "número seguridad social",
+                   "numero de seguridad social", "n seguridad social", "nss"]),
 ]
+
+# Поля карточки, которые Патрон может править прямо с сайта. «name» —
+# особый случай (колонка A, туда пишем напрямую по имени столбца нет).
+EDITABLE_FIELDS = {"local", "dep", "puesto", "tipo", "horas", "horario", "nie",
+                   "tel", "email", "domicilio", "iban", "periodo", "motivo",
+                   "sex", "nss"}
+EDITABLE_DATE_FIELDS = {"alta", "baja", "nac"}
 
 
 def _norm(s) -> str:
@@ -338,6 +347,8 @@ def build_records(values: list, formulas: list, header_row: int) -> dict:
             "iban": mask_iban(g("iban")),
             "domicilio": g("domicilio"),
             "contrato": link,
+            "nss": g("nss"),
+            "seguro": bool(g("nss")),
             "extra": extra,
         })
     return {
@@ -378,7 +389,10 @@ def _in_progress() -> list:
                 "tel": str(app.get("Teléfono", "")).strip(),
                 "email": str(app.get("Correo electrónico", "")).strip(),
                 "iban": mask_iban(app.get("IBAN", "")), "domicilio": str(app.get("Domicilio", "")).strip(),
-                "contrato": "", "extra": {"Заявка от": str(r.get("Дата заявки", "")).strip()},
+                "contrato": "",
+                "nss": str(app.get("Numero seguridad social", "")).strip(),
+                "seguro": bool(str(app.get("Numero seguridad social", "")).strip()),
+                "extra": {"Заявка от": str(r.get("Дата заявки", "")).strip()},
             })
     except Exception as e:
         log.warning("hr_web: чек-лист не прочитан: %s", e)
@@ -407,6 +421,64 @@ async def load_data(force=False) -> dict:
     data = await asyncio.to_thread(_load_sync)
     _cache.update(ts=time.time(), data=data)
     return data
+
+
+# ---------------- ПРАВКА КАРТОЧКИ С САЙТА ----------------
+
+def _write_field_sync(row: int, field: str, value: str):
+    """Пишет одно поле сотрудника в Registro. «alta»/«baja» — по трём
+    колонкам (число/Mes/Año), «name» — колонка A напрямую, остальное —
+    в свою колонку по map_columns. Пустое значение стирает ячейку."""
+    w = M.registro_ws()
+    header_row = M.registro_header_row(w)
+    headers = w.row_values(header_row)
+    cols = map_columns(headers)
+
+    if field == "name":
+        if not value:
+            raise ValueError("имя не может быть пустым")
+        M.sheets_write_retry(w.update_cell, row, 1, value)
+        return
+
+    if field in EDITABLE_DATE_FIELDS:
+        i = cols.get(field)
+        if i is None:
+            raise ValueError(f"колонка «{field}» не найдена в Registro")
+        if field == "nac":
+            if not value:
+                M.sheets_write_retry(w.update_cell, row, i + 1, "")
+                return
+            d = parse_date(value)
+            if not d:
+                raise ValueError(f"не разобрала дату «{value}»")
+            M.sheets_write_retry(w.update_cell, row, i + 1, d.strftime("%d.%m.%Y"))
+            return
+        mes_c, ano_c = _date_parts_cols(headers, i)
+        if not value:
+            M.sheets_write_retry(w.update_cell, row, i + 1, "")
+            if mes_c is not None:
+                M.sheets_write_retry(w.update_cell, row, mes_c + 1, "")
+            if ano_c is not None:
+                M.sheets_write_retry(w.update_cell, row, ano_c + 1, "")
+            return
+        d = parse_date(value)
+        if not d:
+            raise ValueError(f"не разобрала дату «{value}»")
+        M.sheets_write_retry(w.update_cell, row, i + 1, str(d.day))
+        if mes_c is not None:
+            M.sheets_write_retry(w.update_cell, row, mes_c + 1, str(d.month))
+        if ano_c is not None:
+            M.sheets_write_retry(w.update_cell, row, ano_c + 1, str(d.year))
+        return
+
+    if field not in EDITABLE_FIELDS:
+        raise ValueError(f"поле «{field}» нельзя редактировать с сайта")
+    i = cols.get(field)
+    if i is None:
+        raise ValueError(f"колонка «{field}» не найдена в Registro")
+    if field == "local" and value:
+        value = canon_local(value)
+    M.sheets_write_retry(w.update_cell, row, i + 1, value)
 
 
 # ---------------- ВЕБ-СЕРВЕР ----------------
@@ -472,11 +544,50 @@ def _build_app():
     async def health(request):
         return web.Response(text="ok")
 
+    async def update_employee(request):
+        uid = _uid_from(request)
+        if not uid or user_role(uid) != "patron":
+            return web.json_response({"error": "auth"}, status=401)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "битый запрос"}, status=400)
+        try:
+            row = int(body.get("row") or 0)
+        except Exception:
+            row = 0
+        fields = body.get("fields") or {}
+        if row <= 0:
+            return web.json_response(
+                {"error": "эта запись ещё не в Registro (в оформлении) — редактирование "
+                          "с сайта появится, когда карточка сотрудника создастся"}, status=400)
+        if not isinstance(fields, dict) or not fields:
+            return web.json_response({"error": "нечего сохранять"}, status=400)
+        changed, errors = [], []
+        for field, value in fields.items():
+            try:
+                await asyncio.to_thread(_write_field_sync, row, str(field), str(value).strip())
+                changed.append(field)
+            except Exception as e:
+                log.error("hr_web: правка не сохранилась (row=%s field=%s): %s", row, field, e)
+                errors.append(f"{field}: {e}")
+        if changed:
+            _cache["ts"] = 0   # следующее /hr/api/data перечитает Registro заново
+        return web.json_response({"ok": not errors, "changed": changed, "errors": errors})
+
+    async def logo(request):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sl_logo.svg")
+        if not os.path.exists(path):
+            return web.Response(status=404)
+        return web.FileResponse(path, headers={"Cache-Control": "public, max-age=86400"})
+
     app = web.Application()
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
     app.router.add_get("/hr", page)
+    app.router.add_get("/hr/logo.svg", logo)
     app.router.add_get("/hr/api/data", api)
+    app.router.add_post("/hr/api/employee/update", update_employee)
     app["uid_from"] = _uid_from
     for add in EXTRA_ROUTES:
         try:

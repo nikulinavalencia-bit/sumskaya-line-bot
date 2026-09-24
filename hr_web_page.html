@@ -84,14 +84,32 @@ a{color:var(--acc)}
 .bad{background:var(--red-soft);color:var(--red);padding:8px 10px;border-radius:8px;margin-top:10px}
 .docsec{margin-top:14px}
 .docsec h3{font-size:13px;margin:0 0 6px;color:var(--muted);font-weight:600}
+.brand{display:flex;align-items:center;gap:12px}
+.brand svg{height:42px;width:auto;display:block;flex-shrink:0}
+.brand .word{fill:#1c3b2d}
+@media (prefers-color-scheme:dark){.brand .word{fill:#f4efe1}}
+.seguro{font-size:15px}
+.dlg dd input,.dlg dd select{border:1px solid var(--line);background:var(--card);border-radius:6px;
+  padding:4px 7px;font:inherit;color:inherit;width:100%}
+.editbar{display:flex;gap:8px;margin-top:12px}
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
-    <div>
-      <h1 data-i18n="title">Архив сотрудников</h1>
-      <div class="sub" id="meta">Загрузка Registro…</div>
+    <div class="brand">
+      <svg viewBox="0 0 640 200" role="img" aria-label="Sumskaya Line">
+        <rect x="10" y="20" width="160" height="160" rx="30" fill="#1c3b2d"/>
+        <text x="44" y="136" font-family="Arial, Helvetica, sans-serif" font-size="100" font-weight="800" fill="#f4efe1">S</text>
+        <text x="99" y="136" font-family="Arial, Helvetica, sans-serif" font-size="100" font-weight="800" fill="#d99f3d">L</text>
+        <text class="word" x="200" y="100" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="800" letter-spacing="3">SUMSKAYA</text>
+        <line x1="200" y1="138" x2="610" y2="138" stroke="#d99f3d" stroke-width="3"/>
+        <text x="610" y="172" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700" letter-spacing="8" fill="#d99f3d" text-anchor="end">LINE</text>
+      </svg>
+      <div>
+        <h1 data-i18n="title">Архив сотрудников</h1>
+        <div class="sub" id="meta">Загрузка Registro…</div>
+      </div>
     </div>
     <div style="display:flex;gap:8px;align-items:center">
       <div class="seg" id="langSeg">
@@ -203,8 +221,12 @@ const TR = {
     hiredMonth:"приняты в этом месяце", firedMonth:"уволены в этом месяце",
     dep:"Departamento", total:"Итого", noData:"Нет данных под фильтр",
     month:"Месяц", hired:"Принято", fired:"Уволено",
-    cName:"Имя", cLocal:"Локаль", cPuesto:"Puesto", cHoras:"Часы",
+    cName:"Имя", cLocal:"Локаль", cPuesto:"Puesto", cHoras:"Часы", cSeguro:"Страховка",
     cEstado:"Статус", employees:"Сотрудники", nobody:"Никого под этот фильтр",
+    seguroYes:"есть", seguroNo:"нет", seguroLbl:"Страховка (по номеру соц. страхования)",
+    edit:"✏️ Редактировать", save:"💾 Сохранить", saving:"Сохраняю…", cancel:"Отмена",
+    savedOk:"Сохранено", notInReg:"Ещё не в Registro (в оформлении) — редактирование появится "
+      +"после создания карточки сотрудника.",
     tagWork:"работает", tagFired:"уволен(а)", tagProc:"оформление",
     plan:"план", rowIn:"строка", inRegistro:"в Registro", inChecklist:"в чек-листе HR, этап:",
     docsBtn:"📁 Документы сотрудника", docsLoading:"Собираю документы…",
@@ -237,8 +259,12 @@ const TR = {
     hiredMonth:"altas este mes", firedMonth:"bajas este mes",
     dep:"Departamento", total:"Total", noData:"Sin datos con este filtro",
     month:"Mes", hired:"Altas", fired:"Bajas",
-    cName:"Nombre", cLocal:"Local", cPuesto:"Puesto", cHoras:"Horas",
+    cName:"Nombre", cLocal:"Local", cPuesto:"Puesto", cHoras:"Horas", cSeguro:"Seguro",
     cEstado:"Estado", employees:"Empleados", nobody:"Nadie con este filtro",
+    seguroYes:"sí", seguroNo:"no", seguroLbl:"Seguro (por número de seguridad social)",
+    edit:"✏️ Editar", save:"💾 Guardar", saving:"Guardando…", cancel:"Cancelar",
+    savedOk:"Guardado", notInReg:"Todavía no está en Registro (en trámite) — la edición estará "
+      +"disponible cuando se cree la ficha del empleado.",
     tagWork:"activo", tagFired:"baja", tagProc:"en trámite",
     plan:"prevista", rowIn:"fila", inRegistro:"en Registro", inChecklist:"en checklist, etapa:",
     docsBtn:"📁 Documentos del empleado", docsLoading:"Recopilando documentos…",
@@ -398,7 +424,7 @@ function renderMoves(base){
   $("moves").innerHTML = h + "</tbody>";
 }
 
-const COLS = () => [["name",L("cName")],["local",L("cLocal")],["dep",L("dep")],["puesto",L("cPuesto")],["horas",L("cHoras")],["alta","Alta"],["baja","Baja"],["estado",L("cEstado")]];
+const COLS = () => [["name",L("cName")],["local",L("cLocal")],["dep",L("dep")],["puesto",L("cPuesto")],["horas",L("cHoras")],["seguro",L("cSeguro")],["alta","Alta"],["baja","Baja"],["estado",L("cEstado")]];
 function renderList(rows){
   rows = rows.slice().sort((a,b)=>String(a[S.sort]||"").localeCompare(String(b[S.sort]||""),"es")*S.dir);
   const pages = Math.max(1, Math.ceil(rows.length/PAGE));
@@ -407,28 +433,89 @@ function renderList(rows){
   $("listTitle").textContent = `${L("employees")} · ${rows.length}`;
   let h = `<thead><tr>${COLS().map(([k,l])=>`<th data-k="${k}">${l}${S.sort===k?(S.dir>0?" ▲":" ▼"):""}</th>`).join("")}</tr></thead><tbody>`;
   part.forEach(r=>{
-    h += `<tr class="click" data-row="${r.row}"><td>${esc(r.name)}</td><td>${esc(LOC_NAME[r.local]||r.local)}</td><td>${esc(r.dep)}</td><td>${esc(r.puesto)}</td><td>${esc(r.horas)}</td><td>${fmt(r.alta)||(r.inicio?'<span class="muted">'+L("plan")+' '+fmt(r.inicio)+'</span>':'')}</td><td>${fmt(r.baja)}</td><td>${TAG(r)}</td></tr>`;
+    h += `<tr class="click" data-row="${r.row}"><td>${esc(r.name)}</td><td>${esc(LOC_NAME[r.local]||r.local)}</td><td>${esc(r.dep)}</td><td>${esc(r.puesto)}</td><td>${esc(r.horas)}</td><td class="n">${r.seguro?"✅":"—"}</td><td>${fmt(r.alta)||(r.inicio?'<span class="muted">'+L("plan")+' '+fmt(r.inicio)+'</span>':'')}</td><td>${fmt(r.baja)}</td><td>${TAG(r)}</td></tr>`;
   });
   $("list").innerHTML = rows.length ? h+"</tbody>" : `<tr><td class="muted">${L("nobody")}</td></tr>`;
   $("pager").innerHTML = pages>1 ? `<button class="btn" data-p="-1" ${S.page===0?"disabled":""}>←</button><span class="sub">${S.page+1} / ${pages}</span><button class="btn" data-p="1" ${S.page>=pages-1?"disabled":""}>→</button>` : "";
 }
 
-function card(r){
+const EDIT_SPEC = [
+  ["local","Локаль","select:local"],["dep","Departamento","text"],["puesto","Puesto","text"],
+  ["tipo","Tipo de contrato","text"],["alta","Fecha de alta","date"],["baja","Fecha de baja","date"],
+  ["periodo","Período","text"],["motivo","Motivo","text"],["horas","Часы","text"],
+  ["horario","Horario","text"],["sex","Пол","select:sex"],["nac","Дата рождения","date"],
+  ["nie","NIE/TIE","text"],["tel","Телефон","text"],["email","Email","text"],
+  ["domicilio","Domicilio","text"],["nss","Numero seguridad social","text"],
+];
+
+function card(r){ renderCard(r, false); }
+
+function renderCard(r, editing){
   const f = [["Локаль",LOC_NAME[r.local]||r.local],["Departamento",r.dep],["Puesto",r.puesto],["Tipo de contrato",r.tipo],
     ["Fecha de alta",fmt(r.alta)],["Fecha de inicio (план)",fmt(r.inicio)],["Fecha de baja",fmt(r.baja)],["Período",r.periodo],["Motivo",r.motivo],
     ["Часы",r.horas],["Horario",r.horario],["Пол",r.sex],["Дата рождения",fmt(r.nac)],["NIE/TIE",r.nie],
     ["Телефон",r.tel],["Email",r.email],["IBAN",r.iban],["Domicilio",r.domicilio]];
   Object.entries(r.extra||{}).forEach(([k,v])=>f.push([k,v]));
+  const canEdit = r.row > 0;
+  const seguroLine = `<div class="seguro">${L("cSeguro")}: ${r.seguro?("✅ "+L("seguroYes")):("— "+L("seguroNo"))}</div>`;
+
+  let body;
+  if(editing){
+    const fld = ([k,l,t]) => {
+      if(t==="select:local") return `<label><span>${esc(l)}</span><select data-ef="${k}">${LOCS.map(x=>
+        `<option value="${esc(x)}" ${r.local===x?"selected":""}>${esc(LOC_NAME[x]||x)}</option>`).join("")}</select></label>`;
+      if(t==="select:sex") return `<label><span>${esc(l)}</span><select data-ef="${k}"><option value=""></option>
+        <option value="M" ${r.sex==="M"?"selected":""}>M</option><option value="F" ${r.sex==="F"?"selected":""}>F</option></select></label>`;
+      if(t==="date") return `<label><span>${esc(l)}</span><input data-ef="${k}" type="date" value="${esc(r[k]||"")}"></label>`;
+      return `<label><span>${esc(l)}</span><input data-ef="${k}" type="text" value="${esc(r[k]??"")}"></label>`;
+    };
+    body = `<div class="form" style="margin-top:10px">${EDIT_SPEC.map(fld).join("")}</div>
+      <div class="editbar"><button class="btn primary" id="saveBtn">${L("save")}</button>
+        <button class="btn" id="cancelBtn">${L("cancel")}</button></div>
+      <div id="editMsg"></div>`;
+  }else{
+    body = `<div class="row" style="margin-top:10px">
+        ${canEdit?`<button class="btn" id="editBtn">${L("edit")}</button>`:""}
+        <button class="btn primary" id="docsBtn">${L("docsBtn")}</button></div>
+      <div id="docsBox"></div>
+      <dl>${f.filter(x=>x[1]).map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}
+      ${r.contrato?`<dt>Контракт</dt><dd><a href="${esc(r.contrato)}" target="_blank" rel="noopener">${L("folder")}</a></dd>`:""}</dl>
+      ${!canEdit?`<div class="sub" style="margin-top:8px">${L("notInReg")}</div>`:""}`;
+  }
+
   $("dlgBody").innerHTML = `<div class="row" style="margin:0"><h2 style="margin:0;font-size:18px">${esc(r.name)}</h2>
     <button class="btn" onclick="dlg.close()">✕</button></div>
     ${TAG(r)}
     <span class="sub">· ${r.row>0 ? L("rowIn")+" "+r.row+" "+L("inRegistro") : L("inChecklist")+" "+esc(r.etapa||"")}</span>
-    <div class="row" style="margin-top:10px"><button class="btn primary" id="docsBtn">${L("docsBtn")}</button></div>
-    <div id="docsBox"></div>
-    <dl>${f.filter(x=>x[1]).map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}
-    ${r.contrato?`<dt>Контракт</dt><dd><a href="${esc(r.contrato)}" target="_blank" rel="noopener">${L("folder")}</a></dd>`:""}</dl>`;
-  $("docsBtn").onclick = ()=>showDocs(r.name);
-  $("dlg").showModal();
+    ${seguroLine}
+    ${body}`;
+
+  if(editing){
+    $("cancelBtn").onclick = ()=>renderCard(r, false);
+    $("saveBtn").onclick = async ()=>{
+      const fields = {};
+      $("dlgBody").querySelectorAll("[data-ef]").forEach(el=>{ fields[el.dataset.ef] = el.value; });
+      const btn = $("saveBtn"); btn.disabled = true; btn.textContent = L("saving");
+      try{
+        const resp = await fetch("/hr/api/employee/update",{method:"POST",credentials:"same-origin",
+          headers:Object.assign({"Content-Type":"application/json"},AUTH()),
+          body:JSON.stringify({row:r.row, fields})});
+        const d = await resp.json();
+        if(d.error){ $("editMsg").innerHTML = `<div class="bad">${esc(d.error)}</div>`; btn.disabled=false; btn.textContent=L("save"); return; }
+        if(d.errors && d.errors.length){ $("editMsg").innerHTML = `<div class="bad">${d.errors.map(esc).join("<br>")}</div>`; }
+        await load(true);
+        const fresh = ALL.find(x=>x.row===r.row) || r;
+        renderCard(fresh, false);
+      }catch(e){
+        $("editMsg").innerHTML = `<div class="bad">${esc(e.message)}</div>`;
+        btn.disabled = false; btn.textContent = L("save");
+      }
+    };
+  }else{
+    $("docsBtn").onclick = ()=>showDocs(r.name);
+    if(canEdit) $("editBtn").onclick = ()=>renderCard(r, true);
+  }
+  if(!dlg.open) dlg.showModal();
 }
 
 function csv(rows, name){
@@ -627,8 +714,8 @@ $("refresh").onclick = ()=>load(true);
 $("reset").onclick = ()=>{Object.assign(S,{estado:"activo",q:"",dep:"",puesto:"",sex:"",asof:"",altaFrom:"",altaTo:"",page:0}); S.locs.clear();
   ["q","dep","puesto","sex","asof","altaFrom","altaTo"].forEach(id=>$(id).value=""); buildOptions(); render();};
 $("csvPivot").onclick = ()=>csv(PIVOT, `plantilla_${S.asof||new Date().toISOString().slice(0,10)}.csv`);
-$("csvList").onclick = ()=>csv([["Nombre","Local","Departamento","Puesto","Horas","Alta","Baja","Estado","Tipo","NIE","Teléfono","Email"],
-  ...filtered().map(r=>[r.name,LOC_NAME[r.local]||r.local,r.dep,r.puesto,r.horas,fmt(r.alta),fmt(r.baja),r.estado,r.tipo,r.nie,r.tel,r.email])],
+$("csvList").onclick = ()=>csv([["Nombre","Local","Departamento","Puesto","Horas","Seguro","Alta","Baja","Estado","Tipo","NIE","Teléfono","Email"],
+  ...filtered().map(r=>[r.name,LOC_NAME[r.local]||r.local,r.dep,r.puesto,r.horas,r.seguro?"sí":"no",fmt(r.alta),fmt(r.baja),r.estado,r.tipo,r.nie,r.tel,r.email])],
   `empleados_${new Date().toISOString().slice(0,10)}.csv`);
 applyLang();
 load(false);
