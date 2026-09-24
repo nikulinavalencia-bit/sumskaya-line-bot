@@ -11,6 +11,10 @@ Ritmo OPS — отдельный сервис (свой сайт, своя ба�
      Несколько фото одним альбомом = одна накладная.
   3. Дальше всё происходит в Ritmo OPS: распознавание, сопоставление, Syrve.
 
+Передачи: если сообщение в той же группе начинается со слова «Передача», «Отдали»,
+«Traspaso» или с названия другой локали («В Рейну…»), Ritmo OPS делает из него
+расходную накладную у отправителя и приходную у получателя.
+
 Списания: сотрудник пишет обычным текстом в группу Bajas своей локали
 («2 кг помидоров испортились»). Мост пересылает это сообщение в Ritmo OPS,
 там из сообщений за день собирается один акт списания, а вечером он уходит
@@ -40,7 +44,7 @@ from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKe
 
 log = logging.getLogger("ritmo_bridge")
 
-VERSION = "ritmo_bridge 1.1 · 23.09.2026"
+VERSION = "ritmo_bridge 1.2 · 24.09.2026"
 ALBUM_WAIT = 6          # сек — ждём остальные фото альбома
 MARK_OK = "🔗 Ritmo OPS"        # отметка в листе Docs вместо «отправлено в Билз»
 MARK_BAD = "⚠️ Ritmo OPS не принял"
@@ -52,7 +56,7 @@ _meta = {}              # (chat_id, msg_id) -> {"mg": media_group_id, "mime": ..
 _albums = {}            # media_group_id -> {"items": [...], "task": Task}
 _last_saved = {"loc": "", "typ": ""}
 _seen_wo = set()          # сообщения списаний, уже отправленные в Ritmo OPS
-_stats = {"sent": 0, "failed": 0, "wo": 0, "wo_failed": 0, "last_error": ""}
+_stats = {"sent": 0, "failed": 0, "wo": 0, "wo_failed": 0, "tr": 0, "tr_failed": 0, "last_error": ""}
 
 
 # ---------------- НАСТРОЙКИ ----------------
@@ -163,6 +167,38 @@ async def send_writeoff(loc: str, text: str, author: str, ref: str) -> dict:
     return res
 
 
+# Передача в другую локаль: сообщение начинается со слова-маркера или
+# с названия локали-получателя. Список локалей — из RITMO_KEYS и LOCALES бота.
+TR_WORDS = ("передача", "передали", "передаём", "передаем", "перемещение", "отдали", "отдаю",
+            "traspaso", "traslado", "para ", "в рейну", "в францию", "в бакери", "в бойбой")
+
+
+def _is_transfer(text: str) -> bool:
+    t = " " + " ".join(str(text or "").lower().split())
+    first = t.strip().split("\n")[0]
+    if any(w in first for w in TR_WORDS):
+        return True
+    names = []
+    for code in keys():
+        names.append(code)
+        loc = (getattr(core, "LOCALES", {}) or {}).get(code) or {}
+        if loc.get("name"):
+            names.append(str(loc["name"]).lower())
+    return any(n and n in first for n in names)
+
+
+async def send_transfer(loc: str, text: str, author: str, ref: str) -> dict:
+    """Передача между локалями: расход у отправителя, приход у получателя."""
+    res = await asyncio.to_thread(_post, loc, [], author, ref, {"kind": "transfer", "text": text})
+    if res.get("ok"):
+        _stats["tr"] += 1
+    else:
+        _stats["tr_failed"] += 1
+        _stats["last_error"] = str(res.get("error"))[:300]
+        log.error("ritmo_bridge: передача не ушла в Ritmo OPS: %s", res.get("error"))
+    return res
+
+
 def _wo_text(m) -> str:
     """Текст сообщения, если его стоит считать списанием."""
     t = (getattr(m, "text", "") or getattr(m, "caption", "") or "").strip()
@@ -190,12 +226,14 @@ async def _writeoff_watch(m):
         return
     author = m.from_user.full_name if m.from_user else "—"
     ref = f"tg:{m.chat.id}:{m.message_id}"
-    res = await send_writeoff(loc, text, author, ref)
+    move = _is_transfer(text)
+    res = await (send_transfer(loc, text, author, ref) if move else send_writeoff(loc, text, author, ref))
     if not res.get("ok"):
+        what = "Передача" if move else "Списание"
         for pid in core.patrons():
             try:
                 await core.bot.send_message(
-                    pid, f"⚠️ Списание из группы ({loc}) не ушло в Ritmo OPS:\n"
+                    pid, f"⚠️ {what} из группы ({loc}) не ушла в Ritmo OPS:\n"
                          f"<code>{core.html_lib.escape(str(res.get('error'))[:300])}</code>")
             except Exception:
                 pass
@@ -349,6 +387,7 @@ def status_text() -> str:
                      f"(нужно: {', '.join(core.LOCALES)})")
     lines.append(f"Фактур отправлено с запуска: {_stats['sent']}, не ушло: {_stats['failed']}")
     lines.append(f"Сообщений списания: {_stats['wo']}, не ушло: {_stats['wo_failed']}")
+    lines.append(f"Передач между локалями: {_stats['tr']}, не ушло: {_stats['tr_failed']}")
     if _stats["last_error"]:
         lines.append(f"Последняя ошибка: <code>{core.html_lib.escape(_stats['last_error'])}</code>")
     lines.append("")
