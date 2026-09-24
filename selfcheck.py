@@ -205,6 +205,18 @@ def report() -> str:
     return "\n".join(lines)[:4000]
 
 
+async def cmd_chatid(m: Message):
+    """/chatid — показать ID текущего чата (для заполнения листа Groups).
+    Отвечает только патронам/владельцам, чтобы не шуметь в группах сотрудникам."""
+    try:
+        if m.from_user.id not in owner_ids() and not core.is_patron(core.get_user(m.from_user.id)):
+            return
+    except Exception:
+        return
+    kind = "группа" if m.chat.type in ("group", "supergroup") else "личка"
+    await m.answer(f"ChatID: <code>{m.chat.id}</code>\nТип чата: {kind}")
+
+
 async def cmd_version(m: Message):
     if m.from_user.id not in owner_ids():
         return
@@ -265,6 +277,7 @@ def setup(dp, core_module):
     global core
     core = core_module
     dp.message.register(cmd_version, Command("version"))
+    dp.message.register(cmd_chatid, Command("chatid"))
     try:
         dp.startup.register(_on_startup)
     except Exception as ex:
