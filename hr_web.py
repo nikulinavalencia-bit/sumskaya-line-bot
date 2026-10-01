@@ -621,6 +621,13 @@ def web_url() -> str:
     return os.environ.get("HR_WEB_URL", "").rstrip("/")
 
 
+def portal_url() -> str:
+    """Публичный адрес сайта SL portal (sl-portal-, Railway) — новая
+    корпоративная площадка. Переменная Railway бота: SL_PORTAL_URL,
+    например https://sl-portal-production.up.railway.app."""
+    return os.environ.get("SL_PORTAL_URL", "").rstrip("/")
+
+
 # ---------------- ТЕЛЕГРАМ ----------------
 
 def setup(dp, main_module):
@@ -628,33 +635,36 @@ def setup(dp, main_module):
     M = main_module
     from aiogram import F
     from aiogram.filters import Command
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
     dp.startup.register(_start_web)
 
     # Кнопку меню не трогаем — там остаются команды бота (решение 19.09).
 
     async def send_link(chat_id: int, uid: int):
-        base = web_url()
+        # 01.10.2026: архив сотрудников переехал на sl-portal- (единый сайт
+        # SL) — старая веб-страница бота (hr_web_page.html) больше не
+        # открывается отсюда, чтобы не плодить два разных архива. У портала
+        # свой вход (email + пароль), поэтому ссылка просто открывает его —
+        # никакого токена Telegram сюда не прокидываем.
+        base = portal_url()
         if not base:
             await M.bot.send_message(
                 chat_id,
-                "⚠️ Веб-архив ещё не настроен: в Railway нужна переменная "
-                "<code>HR_WEB_URL</code> — публичный адрес сервиса.")
+                "⚠️ Сайт SL ещё не настроен: в Railway бота нужна переменная "
+                "<code>SL_PORTAL_URL</code> — публичный адрес sl-portal- "
+                "(например, https://sl-portal-production.up.railway.app).")
             return
-        link = f"{base}/hr?t={make_token(uid)}"
-        rows = [[InlineKeyboardButton(text="🌐 Открыть архив сотрудников",
-                                      web_app=WebAppInfo(url=f"{base}/hr"))],
-                [InlineKeyboardButton(text="💻 Открыть в браузере", url=link)]]
+        link = f"{base}/#hr-archive"
+        rows = [[InlineKeyboardButton(text="🌐 Открыть архив сотрудников", url=link)]]
         if hasattr(M, "nav_row"):
             rows.append(M.nav_row())
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
         await M.bot.send_message(
             chat_id,
             "🌐 <b>Архив сотрудников</b>\n\n"
-            "• Внутри Telegram — кнопка ниже, открывается сразу.\n"
-            "• В браузере компьютера — «💻 Открыть в браузере» один раз, дальше адрес "
-            "можно сохранить в закладки: вход помнится 90 дней.",
+            "Теперь это раздел сайта Sumskaya Line — кнопка ниже открывает его "
+            "в браузере. Вход — по вашим email и паролю от сайта.",
             reply_markup=kb)
 
     @dp.message(Command("archivo"))
