@@ -30,9 +30,18 @@ Ritmo OPS — отдельный сервис (свой сайт, своя ба�
     RITMO_KEYS   ключи точек из Ritmo OPS (Настройки → Точки → Ключ для Telegram-бота),
                  через запятую: boiboi=rk_xxxx,reina=rk_yyyy
                  Код локали — как в боте: reina, fransia, panaderia, boiboi.
+    RITMO_GROUPS отдельные группы под вид документа (необязательно):
+                 -1001234567890=reina:tr,-1009876543210=panaderia:pr
+                 tr — расходные (перемещения), pr — приготовление, wo — списания.
+                 ChatID группы бот присылает в неё сам, когда его туда добавляют.
+                 В группах tr и pr принимаются и ФОТОГРАФИИ бумажных бланков
+                 («Traspaso entre Almacenes», лист приготовления): снимок уходит
+                 в Ritmo OPS, там его читают и раскладывают по товарам. Альбом из
+                 нескольких кадров одного бланка — один документ.
 """
 
 import os
+import re
 import asyncio
 import logging
 from datetime import datetime, timedelta
@@ -44,7 +53,7 @@ from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKe
 
 log = logging.getLogger("ritmo_bridge")
 
-VERSION = "ritmo_bridge 1.3 · 24.09.2026"
+VERSION = "ritmo_bridge 1.6 · 01.10.2026"
 ALBUM_WAIT = 6          # сек — ждём остальные фото альбома
 MARK_OK = "🔗 Ritmo OPS"        # отметка в листе Docs вместо «отправлено в Билз»
 MARK_BAD = "⚠️ Ritmo OPS не принял"
@@ -55,6 +64,7 @@ _routes_done = False
 _meta = {}              # (chat_id, msg_id) -> {"mg": media_group_id, "mime": ...}
 _albums = {}            # media_group_id -> {"items": [...], "task": Task}
 _last_saved = {"loc": "", "typ": ""}
+_sheets = {}            # media_group_id -> {"items": [...], "task": Task} — фото бланков
 _seen_wo = set()          # сообщения списаний, уже отправленные в Ritmo OPS
 _stats = {"sent": 0, "failed": 0, "wo": 0, "wo_failed": 0, "tr": 0, "tr_failed": 0,
           "pr": 0, "pr_failed": 0, "last_error": ""}
@@ -77,6 +87,95 @@ def keys() -> dict:
             if loc.strip() and key.strip():
                 out[loc.strip().lower()] = key.strip()
     return out
+
+
+KINDS = {"tr": "transfer", "traspaso": "transfer", "salida": "transfer", "расход": "transfer",
+         "pr": "production", "prod": "production", "produccion": "production",
+         "приготовление": "production",
+         "wo": "writeoff", "baja": "writeoff", "списание": "writeoff"}
+
+
+def groups() -> dict:
+    """RITMO_GROUPS — отдельные группы под вид документа, без правки bot.py.
+
+    Формат: chat_id=локаль:вид, через запятую. Вид: tr — расходные (перемещения),
+    pr — акты приготовления, wo — списания. Например:
+        -1001234567890=reina:tr,-1009876543210=panaderia:pr
+    Локаль можно не указывать — тогда отправителя берём из первой строки
+    сообщения («Reina / Para Francia»). Это для общей группы перемещений:
+        -1001234567890=:tr
+    Если группы здесь нет, мост работает как раньше: берёт группы списаний
+    из листа Groups бота и различает вид документа по первому слову сообщения.
+    """
+    out = {}
+    for part in os.environ.get("RITMO_GROUPS", "").replace(";", ",").split(","):
+        if "=" not in part:
+            continue
+        cid, val = part.split("=", 1)
+        loc, _, kind = val.partition(":")
+        kind = KINDS.get(kind.strip().lower(), "writeoff")
+        loc = loc.strip().lower()
+        if loc in ("*", "-", "все", "any"):
+            loc = ""
+        if cid.strip():
+            out[cid.strip()] = (loc, kind)
+    return out
+
+
+# как локали называют друг друга в переписке
+LOC_ALIASES = {
+    "reina": ("reina", "reyna", "рейна", "рейну", "рейне"),
+    "fransia": ("francia", "fransia", "francya", "франция", "францию", "франции", "франсия"),
+    "francia": ("francia", "fransia", "francya", "франция", "францию", "франции"),
+    "panaderia": ("panaderia", "panadería", "bakery", "obrador", "пекарня", "панадерия", "обрадор"),
+    "bakery": ("bakery", "panaderia", "panadería", "obrador", "пекарня"),
+    "boiboi": ("boiboi", "boi boi", "boi-boi", "boi", "бой бой", "бойбой", "бой", "bb"),
+}
+
+
+def _loc_code(text: str) -> str:
+    """Код локали по куску текста — только среди тех, у кого есть ключ Ritmo OPS."""
+    t = " " + " ".join(str(text or "").lower().split()) + " "
+    best, pos = "", 10 ** 6
+    for code in keys():
+        for a in LOC_ALIASES.get(code, (code,)):
+            i = t.find(a)
+            if i >= 0 and i < pos:
+                best, pos = code, i
+    return best
+
+
+def _route(text: str) -> str:
+    """Отправитель из первой строки: «Reina / Para Francia» → reina.
+
+    Берём только часть до «/» или до «para»: после неё стоит получатель,
+    его определит уже сам Ritmo OPS.
+    """
+    first = ""
+    for row in str(text or "").split("\n"):
+        if row.strip():
+            first = row.strip()
+            break
+    low = " " + first.lower() + " "
+    left = first
+    if "/" in first:
+        left = first.split("/", 1)[0]
+    else:
+        for w in (" para ", " в ", " to "):
+            if w in low:
+                left = low.split(w, 1)[0]
+                break
+        else:
+            left = ""
+    return _loc_code(left)
+
+
+def _looks_like_doc(text: str) -> bool:
+    """Похоже на список товаров: есть строка с количеством. Болтовню не трогаем."""
+    for row in str(text or "").split("\n"):
+        if re.search(r"\d", row) and re.search(r"[A-Za-zА-Яа-яЁёÁÉÍÓÚÑáéíóúñ]{2,}", row):
+            return True
+    return False
 
 
 def enabled_for(loc: str) -> bool:
@@ -209,6 +308,18 @@ def _is_transfer(text: str) -> bool:
     return any(n and n in first for n in names)
 
 
+async def _ask_sender(m):
+    """В общей группе перемещений не понятно, кто отдаёт — просим написать."""
+    try:
+        await core.bot.send_message(
+            m.chat.id,
+            "Не понял, кто отправитель. Напишите первой строкой откуда и куда, "
+            "например: <code>Reina / Para Francia</code>",
+            reply_to_message_id=m.message_id)
+    except Exception as ex:
+        log.warning("ritmo_bridge: не ответил в группу: %s", ex)
+
+
 async def send_transfer(loc: str, text: str, author: str, ref: str) -> dict:
     """Передача между локалями: расход у отправителя, приход у получателя."""
     res = await asyncio.to_thread(_post, loc, [], author, ref, {"kind": "transfer", "text": text})
@@ -219,6 +330,68 @@ async def send_transfer(loc: str, text: str, author: str, ref: str) -> dict:
         _stats["last_error"] = str(res.get("error"))[:300]
         log.error("ritmo_bridge: передача не ушла в Ritmo OPS: %s", res.get("error"))
     return res
+
+
+def _file_of(m):
+    """file_id и mime вложения сообщения: фото или документ (jpg/pdf)."""
+    if getattr(m, "photo", None):
+        return m.photo[-1].file_id, "image/jpeg"
+    doc = getattr(m, "document", None)
+    if doc:
+        mime = str(doc.mime_type or "")
+        name = (doc.file_name or "").lower()
+        if not mime:
+            mime = "application/pdf" if name.endswith(".pdf") else "image/jpeg"
+        if mime.startswith("image/") or mime == "application/pdf":
+            return doc.file_id, mime
+    return "", ""
+
+
+async def send_sheet(items: list, loc: str, kind: str) -> dict:
+    """Фотографии бумажного бланка (traspaso или лист приготовления) — в Ritmo OPS.
+
+    Альбом из нескольких снимков одного бланка уходит одним документом."""
+    files = []
+    for it in items:
+        try:
+            buf = await core.bot.download(it["file_id"])
+            data = buf.read()
+        except Exception as ex:
+            log.warning("ritmo_bridge: бланк не скачался: %s", ex)
+            continue
+        ext = "pdf" if data[:4] == b"%PDF" else "jpg"
+        files.append((data, it.get("mime") or "", f"tg_{it['msg_id']}.{ext}"))
+    if not files:
+        return {"ok": False, "error": "файлы не скачались из Telegram"}
+    first = items[0]
+    ref = f"tg:{first['chat_id']}:" + ",".join(str(it["msg_id"]) for it in items)
+    extra = {"kind": kind, "text": first.get("caption", "")}
+    res = await asyncio.to_thread(_post, loc, files, first.get("author", ""), ref, extra)
+    key = "pr" if kind == "production" else "tr"
+    if res.get("ok"):
+        _stats[key] += 1
+    else:
+        _stats[key + "_failed"] += 1
+        _stats["last_error"] = str(res.get("error"))[:300]
+        log.error("ritmo_bridge: бланк не ушёл в Ritmo OPS: %s", res.get("error"))
+    return res
+
+
+async def _sheet_intake(item: dict, mg: str, loc: str, kind: str):
+    """Ждём остальные снимки альбома — один бланк могут снять в несколько кадров."""
+    if not mg:
+        await send_sheet([item], loc, kind)
+        return
+    a = _sheets.setdefault(mg, {"items": [], "task": None})
+    a["items"].append(item)
+    if a["task"] is None:
+        async def later():
+            await asyncio.sleep(ALBUM_WAIT)
+            items = _sheets.pop(mg, {}).get("items", [])
+            items.sort(key=lambda x: int(x["msg_id"]))
+            if items:
+                await send_sheet(items, loc, kind)
+        a["task"] = asyncio.create_task(later())
 
 
 def _wo_text(m) -> str:
@@ -233,24 +406,57 @@ def _wo_text(m) -> str:
 
 
 async def _writeoff_watch(m):
-    """Сообщение в группе списаний → в Ritmo OPS, в акт сегодняшнего дня."""
+    """Сообщение из группы → в Ritmo OPS: списание, расходная или приготовление."""
     if not m.chat or m.chat.type not in ("group", "supergroup"):
         return
-    gmap = getattr(core, "group_map", None)
-    gm = gmap(m.chat.id) if callable(gmap) else None
-    if not gm:
+    fixed = groups().get(str(m.chat.id))          # группа с заданным видом документа
+    if fixed:
+        loc, want = fixed
+        text0 = _wo_text(m)
+        if want in ("transfer", "production") and text0:
+            if want == "transfer" and not _looks_like_doc(text0):
+                return                            # переписка без количеств — не документ
+            # в общей группе отправителя пишут первой строкой: «Reina / Para Francia».
+            # Для приготовления строка необязательна: нет её — берём локаль группы.
+            sender = _route(text0)
+            if sender:
+                loc = sender
+            elif not loc:
+                await _ask_sender(m)
+                return
+    else:
+        gmap = getattr(core, "group_map", None)
+        gm = gmap(m.chat.id) if callable(gmap) else None
+        if not gm or gm[1] != "baja":
+            return
+        loc, want = gm[0], ""
+    if not enabled_for(loc):
         return
-    loc, typ = gm
-    if typ != "baja" or not enabled_for(loc):
-        return
+    # фотография бумажного бланка в группе перемещений или приготовления.
+    # Бланк заполняют от руки, текста в сообщении обычно нет — читаем сам снимок.
+    if fixed and want in ("transfer", "production"):
+        fid, mime = _file_of(m)
+        if fid:
+            item = {"chat_id": m.chat.id, "msg_id": m.message_id, "file_id": fid, "mime": mime,
+                    "author": m.from_user.full_name if m.from_user else "—",
+                    "caption": (getattr(m, "caption", "") or "")[:500]}
+            mg = str(getattr(m, "media_group_id", "") or "")
+            res = {"ok": True}
+            try:
+                await _sheet_intake(item, mg, loc, want)
+            except Exception as ex:
+                res = {"ok": False, "error": f"{type(ex).__name__}: {ex}"}
+            if not res.get("ok"):
+                log.error("ritmo_bridge: бланк не поставлен в отправку: %s", res.get("error"))
+            return
     text = _wo_text(m)
     if not text:
         return
     author = m.from_user.full_name if m.from_user else "—"
     ref = f"tg:{m.chat.id}:{m.message_id}"
-    if _is_production(text):
+    if want == "production" or (not want and _is_production(text)):
         kind, res = "Акт приготовления", await send_production(loc, text, author, ref)
-    elif _is_transfer(text):
+    elif want == "transfer" or (not want and _is_transfer(text)):
         kind, res = "Расходная", await send_transfer(loc, text, author, ref)
     else:
         kind, res = "Списание", await send_writeoff(loc, text, author, ref)
@@ -415,6 +621,11 @@ def status_text() -> str:
     lines.append(f"Сообщений списания: {_stats['wo']}, не ушло: {_stats['wo_failed']}")
     lines.append(f"Расходных между локалями: {_stats['tr']}, не ушло: {_stats['tr_failed']}")
     lines.append(f"Актов приготовления: {_stats['pr']}, не ушло: {_stats['pr_failed']}")
+    g = groups()
+    if g:
+        names = {"transfer": "расходные", "production": "приготовление", "writeoff": "списания"}
+        lines.append("Отдельные группы (RITMO_GROUPS): " +
+                     ", ".join(f"{loc} — {names.get(k, k)}" for loc, k in g.values()))
     if _stats["last_error"]:
         lines.append(f"Последняя ошибка: <code>{core.html_lib.escape(_stats['last_error'])}</code>")
     lines.append("")
@@ -426,6 +637,57 @@ async def cmd_ritmo(m: Message):
     if m.chat.type != "private" or not core.is_patron(core.get_user(m.from_user.id)):
         return
     await m.answer(await asyncio.to_thread(status_text))
+
+
+async def cmd_here(m: Message):
+    """/ritmo_here прямо в группе — показывает, как мост видит эту группу.
+
+    Чаще всего «из группы ничего не приходит» означает одно: её chat_id не вписан
+    в RITMO_GROUPS, и мост о ней не знает. Эта команда снимает все догадки."""
+    if m.chat.type not in ("group", "supergroup"):
+        await m.answer("Эту команду нужно отправить в саму группу.")
+        return
+    if not core.is_patron(core.get_user(m.from_user.id)):
+        return
+    cid = str(m.chat.id)
+    names = {"transfer": "перемещения (расходные)", "production": "акты приготовления",
+             "writeoff": "списания"}
+    out = ["🔗 <b>Эта группа и Ritmo OPS</b>", "",
+           f"ChatID: <code>{cid}</code>"]
+    fixed = groups().get(cid)
+    if fixed:
+        loc, kind = fixed
+        out.append(f"В RITMO_GROUPS: да — {names.get(kind, kind)}")
+        out.append(f"Отправитель: {loc or 'берётся из первой строки сообщения'}")
+        if loc and not enabled_for(loc):
+            out.append(f"⚠️ У локали <code>{loc}</code> нет ключа в RITMO_KEYS — "
+                       f"сообщения не уйдут.")
+        elif loc:
+            out.append("Ключ локали: ✅ есть")
+    else:
+        gmap = getattr(core, "group_map", None)
+        gm = gmap(m.chat.id) if callable(gmap) else None
+        if gm and gm[1] == "baja":
+            out.append(f"В RITMO_GROUPS: нет, но это группа списаний локали {gm[0]} "
+                       f"из листа Groups — сообщения уходят как списания.")
+            if not enabled_for(gm[0]):
+                out.append(f"⚠️ У локали <code>{gm[0]}</code> нет ключа в RITMO_KEYS.")
+        else:
+            out.append("В RITMO_GROUPS: <b>нет</b> — мост эту группу не слушает.")
+            out.append("")
+            out.append("Чтобы заработало, добавьте в Railway бота к переменной "
+                       "RITMO_GROUPS через запятую:")
+            out.append(f"<code>{cid}=ЛОКАЛЬ:ВИД</code>")
+            out.append("ВИД: <code>tr</code> — перемещения, <code>pr</code> — приготовление, "
+                       "<code>wo</code> — списания.")
+            out.append(f"Локали с ключом: {', '.join(keys()) or '— нет (RITMO_KEYS)'}")
+            out.append("Для общей группы перемещений локаль можно не писать: "
+                       f"<code>{cid}=:tr</code> — тогда отправителя берём из первой строки "
+                       "сообщения («Reina / Para Francia»).")
+    if not ritmo_url():
+        out.append("")
+        out.append("⚠️ RITMO_URL не задан — мост выключен целиком.")
+    await m.answer("\n".join(out))
 
 
 async def cmd_import(m: Message):
@@ -478,5 +740,6 @@ def setup(dp, core_module):
     dp.callback_query.register(cb_stock_root, F.data == "d:stock")
     dp.message.register(cmd_almacen, Command("almacen"))
     dp.message.register(cmd_ritmo, Command("ritmo"))
+    dp.message.register(cmd_here, Command("ritmo_here"))
     dp.message.register(cmd_import, Command("ritmo_import"))
     log.info("%s подключён: %s, локали %s", VERSION, ritmo_url() or "—", ", ".join(keys()) or "—")
