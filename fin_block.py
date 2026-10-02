@@ -22,6 +22,7 @@
 
 import os
 import re
+import sys
 import html
 import asyncio
 import logging
@@ -34,6 +35,7 @@ log = logging.getLogger("fin")
 
 core = None          # модуль bot.py целиком — подставляется в setup()
 _dp = None           # диспетчер, нужен соседним модулям блока
+remesa = None        # fin_remesa — выгрузка файла для банка, если подключился
 _routes_done = False
 
 # ---------------- НАСТРОЙКИ (открытые вопросы ТЗ — меняются одной строкой) ----------------
@@ -57,6 +59,12 @@ ROLE_FINDIR = "Фин. директор"
 FIN_DIRECTOR_IDS = {
     int(x) for x in os.environ.get("FIN_DIRECTOR_IDS", "").replace(" ", "").split(",") if x.isdigit()
 }
+
+# Статус платежей переехал на единый сайт SL (sl-portal) — страница бота
+# /pagos (fin_web.py) больше не используется, кнопка просто ведёт на сайт.
+# Переменная Railway: SL_SITE_URL — если задана, перекрывает значение по
+# умолчанию (временный Railway-адрес, пока не настроен свой домен).
+SL_SITE_URL = os.environ.get("SL_SITE_URL", "https://sl-portal-production.up.railway.app").rstrip("/")
 
 STATE_TTL = 30 * 60      # сколько живёт «жду документ / жду ввод», секунд
 LIST_LIMIT = 30          # максимум строк на экране списка
@@ -151,7 +159,7 @@ def parse_amount(s) -> float:
     if s is None:
         return 0.0
     txt = str(s)
-    txt = txt.replace("€", "").replace(" ", " ").strip()
+    txt = txt.replace("€", "").replace(" ", " ").strip()
     txt = "".join(ch for ch in txt if ch.isdigit() or ch in ".,-")
     if not txt:
         return 0.0
@@ -838,6 +846,7 @@ async def cb_loc_menu(c: CallbackQuery):
         [btn(f"✅ Оплаченные ({len(in_bank) + len(paid)})", f"fin:pay:{loc}")],
         [btn("🗂 Архив фактур", f"fin:arch:{loc}")],
         [btn("▶️ Сформировать ремесу", f"fin:rem:{loc}")],
+        [btn("🏦 Счёт списания", f"fin:cnt:{loc}")] if remesa is not None else [],
         [btn("💳 Загрузить документ", "fin:up")],
     ]))
     await c.answer()
@@ -1203,19 +1212,24 @@ async def on_fill_text(m: Message):
 # ---------------- ВЕБ-СТРАНИЦА СТАТУСА ПЛАТЕЖЕЙ ----------------
 
 async def cb_web_link(c: CallbackQuery):
-    """Личная ссылка на страницу статуса платежей. Видит каждый сотрудник —
-    свои документы; фин. директор и патрон — все."""
+    """Статус платежей переехал на единый сайт SL (sl-portal) — отдельная
+    страница бота (/pagos, модуль fin_web.py) больше не используется.
+    Ссылка ведёт прямо в раздел «Финансы → Статус платежей» сайта; вход там
+    свой (email/пароль сайта), от Telegram не зависит."""
     u = core.guard(c)
     if not u:
         await deny(c)
         return
-    try:
-        import fin_web
-        await fin_web.send_link(c.message.chat.id, c.from_user.id)
-        await c.answer()
-    except Exception as ex:
-        log.warning("страница статуса недоступна: %s", ex)
-        await c.answer("Страница статуса ещё не настроена", show_alert=True)
+    url = f"{SL_SITE_URL}/#fin-status"
+    rows_ = [[InlineKeyboardButton(text="🌐 Открыть сайт SL", url=url)],
+             [btn("⬅️ Назад", "bk")]]
+    await core.take_over(
+        c,
+        "🌐 <b>Статус платежей</b>\n\n"
+        "Теперь это раздел единого сайта SL — «Финансы → Статус платежей».\n"
+        "Войдите на сайте под своим логином (не Telegram) и откройте этот раздел.",
+        InlineKeyboardMarkup(inline_keyboard=rows_))
+    await c.answer()
 
 
 # ---------------- УДАЛЕНИЕ, ОПЛАТА, ХУСТИФИКАНТЕ ----------------
@@ -1886,12 +1900,19 @@ async def cb_remesa(c: CallbackQuery):
         lines.append("")
         lines.append(f"⚠️ Не готовы ({len(not_ready)}): нет суммы, нет IBAN "
                      f"или ждут подтверждения.")
-    lines.append("")
-    lines.append("Выгрузка XML + 2 PDF включится, как только будут ответы по счёту списания, "
-                 "концепту платежа и дате исполнения.")
+    rows_ = []
+    if ready and remesa is not None:
+        try:
+            rows_ += remesa.extra_buttons(loc)
+            ok, missing = remesa.cuenta_ready(loc)
+            lines.append("")
+            lines.append("Файл для банка готов к выгрузке." if ok else
+                         f"⚠️ Для выгрузки не хватает: {e(', '.join(missing))}.")
+        except Exception as ex:
+            log.warning("не смог показать кнопки выгрузки: %s", ex)
 
-    rows_ = [[btn(f"🚫 {str(r.get('Поставщик'))[:20]} · {money(r.get('Total'))}",
-                  f"fin:exc:{r.get('ID')}")] for _, r in ready[:LIST_LIMIT]]
+    rows_ += [[btn(f"🚫 {str(r.get('Поставщик'))[:20]} · {money(r.get('Total'))}",
+                   f"fin:exc:{r.get('ID')}")] for _, r in ready[:LIST_LIMIT]]
     await core.take_over(c, "\n".join(lines)[:4000], kb(rows_))
     await c.answer()
 
@@ -2157,13 +2178,22 @@ def setup(dp, core_module):
     # и сама проверка шапок — пакетом и без падения
     install_headers_guard()
 
-    # веб-страница статуса платежей живёт в отдельном файле и делит
-    # веб-сервер с архивом сотрудников — порт у Railway один
+    # старая страница /pagos (fin_web.py) оставлена подключённой — вдруг у
+    # кого-то в закладках старая ссылка; кнопка в боте на неё больше не ведёт
     try:
         import fin_web
         fin_web.setup(core_module)
     except Exception as ex:
         log.warning("fin_web не подключён: %s", ex)
+
+    # выгрузка ремесы в банк — отдельным файлом
+    global remesa
+    try:
+        import fin_remesa
+        fin_remesa.setup(dp, core_module, sys.modules[__name__])
+        remesa = fin_remesa
+    except Exception as ex:
+        log.warning("fin_remesa не подключён: %s", ex)
 
     for prefix, fn, exact in CALLBACKS:
         flt = (F.data == prefix) if exact else F.data.startswith(prefix)
